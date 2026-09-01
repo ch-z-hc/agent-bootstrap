@@ -1,0 +1,9 @@
+__pycache__/
+*.py[cod]
+.venv/
+*.log
+agent-vendors.yaml
+*.credentials.yaml
+backups/
+.env
+.DS_Store
