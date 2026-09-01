@@ -18,9 +18,7 @@ import json
 import os
 import re
 import shutil
-import subprocess
 import sys
-import tempfile
 import time
 import tomllib
 from pathlib import Path
@@ -32,6 +30,7 @@ AGENTS_DIR = HOME / ".agents"
 DSH = HOME / ".dsh"
 VENDORS_FILE = AGENTS_DIR / "agent-vendors.yaml"
 BACKUP_ROOT = AGENTS_DIR / "backups" / "agent-vendors"
+HOME_POSIX = str(HOME).replace("\\", "/")
 
 # Target file locations
 TARGETS = {
@@ -40,7 +39,6 @@ TARGETS = {
     "codex_deepseek_config": HOME / ".codex" / "deepseek.config.toml",
     "pi_settings": HOME / ".pi" / "agent" / "settings.json",
     "pi_models": HOME / ".pi" / "agent" / "models.json",
-    "pi_models_store": HOME / ".pi" / "agent" / "models-store.json",
     "zcode_config": HOME / ".zcode" / "v2" / "config.json",
     "dsh_settings": DSH / "settings.yaml",
     "dsh_credentials": DSH / ".credentials.yaml",
@@ -363,7 +361,7 @@ def build_vendors(force=False):
                 "modelProvider": (codex["deepseek_profile"] or {}).get("model_provider") or "deepseek",
                 "modelReasoningEffort": (codex["deepseek_profile"] or {}).get("model_reasoning_effort") or "high",
                 "modelCatalogJson": (codex["deepseek_profile"] or {}).get("model_catalog_json")
-                or "C:/Users/chzhc/.codex/models.deepseek.json",
+                or f"{HOME_POSIX}/.codex/models.deepseek.json",
             },
         },
         "pi": {
@@ -666,10 +664,10 @@ def sync_codex(vendors: dict, dry_run: bool, no_backup: bool, changes: list) -> 
         if a.get("defaultModelReasoningEffort"):
             updates[None]["model_reasoning_effort"] = a["defaultModelReasoningEffort"]
         if a.get("defaultProvider") == "deepseek":
-            catalog = (a.get("deepseekProfile") or {}).get("modelCatalogJson") or "C:/Users/chzhc/.codex/models.deepseek.json"
+            catalog = (a.get("deepseekProfile") or {}).get("modelCatalogJson") or f"{HOME_POSIX}/.codex/models.deepseek.json"
             updates[None]["model_catalog_json"] = catalog
         else:
-            updates[None]["model_catalog_json"] = "C:/Users/chzhc/.codex/models.json"
+            updates[None]["model_catalog_json"] = f"{HOME_POSIX}/.codex/models.json"
         for pname, entry in (a.get("providers") or {}).items():
             gp = providers.get(pname) or {}
             _, gkey = resolve_provider(providers, pname)
@@ -784,151 +782,6 @@ def sync_pi(vendors: dict, dry_run: bool, no_backup: bool, changes: list) -> Non
                 pd["models"] = []
 
     update_json(TARGETS["pi_models"], mut_models, dry_run, "pi models", no_backup, changes)
-
-    def pi_store_model_entry(mid, m, name, api, base):
-        return {
-            "id": mid,
-            "name": m.get("name") or mid,
-            "api": api,
-            "baseUrl": base,
-            "provider": name,
-            "reasoning": bool(m.get("reasoning", False)),
-            "input": m.get("input") or ["text"],
-            "cost": m.get("cost") or {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
-            "contextWindow": int(m.get("contextWindow") or 1000000),
-            "maxTokens": int(m.get("maxTokens") or 8192),
-            "compat": m.get("compat") or {},
-            "thinkingLevelMap": m.get("thinkingLevelMap") or {},
-        }
-
-    def mut_store(data):
-        now = int(time.time() * 1000)
-        # Drop anything not declared in the central YAML.
-        for key in list(data.keys()):
-            if key not in provider_names:
-                del data[key]
-        for name in provider_names:
-            info = pi_info(name)
-            if info is None:
-                data.pop(name, None)
-                continue
-            p, key, base, api = info
-            store = data.setdefault(name, {})
-            before = json.dumps({"models": store.get("models") or []}, sort_keys=True, ensure_ascii=False)
-            old_by_id = {m.get("id"): m for m in (store.get("models") or [])}
-            new_models = []
-            for mid, m in (p.get("models") or {}).items():
-                old = old_by_id.get(mid)
-                entry = pi_store_model_entry(mid, m, name, api, base)
-                if old is not None:
-                    # Keep detailed capability fields for models still in YAML.
-                    for field in ("reasoning", "input", "cost", "contextWindow", "maxTokens", "compat", "thinkingLevelMap"):
-                        if field in old:
-                            entry[field] = old[field]
-                    if "name" in old and m.get("name") is None:
-                        entry["name"] = old["name"]
-                new_models.append(entry)
-            store["models"] = new_models
-            after = json.dumps({"models": new_models}, sort_keys=True, ensure_ascii=False)
-            store.setdefault("etag", None)
-            if before != after:
-                store["checkedAt"] = now
-                store["lastModified"] = now
-
-    # models-store.json is managed/rewritten by Pi itself on startup, so we
-    # intentionally do NOT prune it here. Hiding is handled by pi-hide-providers.
-
-
-def sync_pi_hide(vendors: dict, dry_run: bool, no_backup: bool, changes: list) -> None:
-    """Keep pi-hide-providers blocklist in sync with the central YAML."""
-    a = vendors["agents"].get("pi") or {}
-    if not a.get("enabled", True):
-        return
-    pi_cmd = HOME / ".local" / "bin" / "pi.cmd"
-    agent_cmd = HOME / ".local" / "bin" / "agent.cmd"
-    commands: list[list[str]] = []
-    if pi_cmd.exists():
-        commands.append([str(pi_cmd)])
-    if agent_cmd.exists():
-        commands.append(["cmd", "/c", str(agent_cmd)])
-    if not commands:
-        return
-
-    # Combine model views from both pi and agent (agent is a pi-based wrapper).
-    visible: set[tuple[str, str]] = set()
-    for base_cmd in commands:
-        try:
-            proc = subprocess.run(
-                base_cmd + ["--no-extensions", "--list-models"],
-                capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120,
-            )
-            out = proc.stdout or ""
-        except Exception as e:
-            print("[sync][pi-hide] cannot run model list:", e)
-            continue
-        for line in out.splitlines():
-            m = re.match(r"^\s*([A-Za-z0-9_.:-]+)\s+([A-Za-z0-9_.:-]+)\s+", line)
-            if m and m.group(1) != "provider":
-                visible.add((m.group(1), m.group(2)))
-
-    # Providers known to Pi (including built-ins that may not show without auth).
-    store_providers: list[str] = []
-    try:
-        store_providers = list(json.loads(TARGETS["pi_models_store"].read_text(encoding="utf-8")).keys())
-    except Exception:
-        pass
-
-    hide: list[dict] = []
-    seen: set[str] = set()
-
-    def add(rule: dict) -> None:
-        key = json.dumps(rule, sort_keys=True, ensure_ascii=False)
-        if key not in seen:
-            seen.add(key)
-            hide.append(rule)
-
-    # Keep existing rules that are still valid, so dynamic model-list changes
-    # do not make the blocklist flap.
-    path = HOME / ".pi" / "agent" / "hide-providers.json"
-    try:
-        old_rules = json.loads(path.read_text(encoding="utf-8")).get("hide", [])
-    except Exception:
-        old_rules = []
-    for rule in old_rules:
-        provider = rule.get("provider")
-        model = rule.get("model")
-        if provider not in vendors["providers"]:
-            add({"provider": provider})
-        elif model and model not in set((vendors["providers"][provider].get("models") or {}).keys()):
-            add({"provider": provider, "model": model})
-
-    # Whole providers not present in YAML.
-    for pname in store_providers:
-        if pname not in vendors["providers"]:
-            add({"provider": pname})
-
-    # Specific visible models not present in their YAML provider model list.
-    for provider, model in visible:
-        p = vendors["providers"].get(provider)
-        if p is None:
-            add({"provider": provider})
-        else:
-            ymodels = set((p.get("models") or {}).keys())
-            if model not in ymodels:
-                add({"provider": provider, "model": model})
-
-    config = {"hide": hide}
-    path = HOME / ".pi" / "agent" / "hide-providers.json"
-    if path.exists():
-        def mut(data):
-            data.clear()
-            data.update(config)
-        update_json(path, mut, dry_run, "pi hide-providers", no_backup, changes)
-    else:
-        changes.append(f"[pi hide-providers] would create {path.name} with {len(hide)} rules")
-        if not dry_run:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(json.dumps(config, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
 def sync_zcode(vendors: dict, dry_run: bool, no_backup: bool, changes: list) -> None:
@@ -1073,7 +926,6 @@ def cmd_sync(args):
     sync_claude(vendors, args.dry_run, args.no_backup, changes)
     sync_codex(vendors, args.dry_run, args.no_backup, changes)
     sync_pi(vendors, args.dry_run, args.no_backup, changes)
-    sync_pi_hide(vendors, args.dry_run, args.no_backup, changes)
     sync_zcode(vendors, args.dry_run, args.no_backup, changes)
     sync_dsh(vendors, args.dry_run, args.no_backup, changes)
 
