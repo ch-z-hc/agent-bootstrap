@@ -12,10 +12,10 @@ Copy-Item .\agent_vendors.py, .\sync-agent-vendors.ps1, .\watch-agent-vendors.py
 Copy-Item .\agent-vendors.example.yaml "$HOME\.agents\agent-vendors.yaml"
 ```
 
-安装 Python 依赖：
+安装 Python 依赖（支持 Python 3.7+）：
 
 ```powershell
-python -m pip install pyyaml
+python -m pip install -r requirements.txt
 ```
 
 ## 使用

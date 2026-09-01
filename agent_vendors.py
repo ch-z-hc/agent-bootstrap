@@ -2,7 +2,7 @@
 """Agent vendor config centralization for DSH.
 
 Commands:
-    init        Build ~/.dsh/agent-vendors.yaml from existing agent configs.
+    init        Build ~/.agents/agent-vendors.yaml from existing agent configs.
     sync        Update Claude/Codex/Pi/ZCode/DSH from agent-vendors.yaml.
 
 Examples:
@@ -20,10 +20,14 @@ import re
 import shutil
 import sys
 import time
-import tomllib
 from pathlib import Path
 
 import yaml
+
+try:
+    import tomllib
+except ModuleNotFoundError:
+    import tomli as tomllib
 
 HOME = Path(os.path.expanduser("~"))
 AGENTS_DIR = HOME / ".agents"
@@ -61,6 +65,7 @@ def load_json(path: Path):
 
 
 def save_json(path: Path, data) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
@@ -74,6 +79,7 @@ def load_yaml(path: Path):
 
 
 def save_yaml(path: Path, data) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
     with open(tmp, "w", encoding="utf-8") as f:
         yaml.safe_dump(data, f, allow_unicode=True, sort_keys=False, default_flow_style=False)
@@ -86,6 +92,10 @@ def backup(path: Path) -> Path | None:
     BACKUP_ROOT.mkdir(parents=True, exist_ok=True)
     stamp = time.strftime("%Y%m%d-%H%M%S")
     dest = BACKUP_ROOT / f"{path.name}.{stamp}"
+    counter = 1
+    while dest.exists():
+        dest = BACKUP_ROOT / f"{path.name}.{stamp}.{counter}"
+        counter += 1
     shutil.copy2(path, dest)
     return dest
 
@@ -476,6 +486,7 @@ def with_newlines(text: str, sample: str) -> str:
 
 
 def write_text(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(text, encoding="utf-8")
     tmp.replace(path)
@@ -551,15 +562,25 @@ def toml_ensure(line: str) -> str:
     return line
 
 
+def toml_value(value: object) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return str(value)
+    if isinstance(value, list):
+        return "[" + ", ".join(toml_value(item) for item in value) + "]"
+    return json.dumps(str(value), ensure_ascii=False)
+
+
 def set_toml_values(lines: list[str], updates: dict[str, dict[str, object]]) -> tuple[list[str], bool]:
     """updates maps section->{key: value}; section None means top-level."""
     out = lines[:]
     changed = False
     # track existing sections; first pass locate and replace
     current_section = None
-    found = {None: False}
+    found: dict[str | None, set[str]] = {None: set()}
     for key in updates:
-        found[key] = False
+        found[key] = set()
     for i, line in enumerate(out):
         sm = re.match(r'^\[([^\]]+)\]\s*$', line.strip())
         if sm:
@@ -576,27 +597,61 @@ def set_toml_values(lines: list[str], updates: dict[str, dict[str, object]]) -> 
             if km:
                 key = km.group(2)
                 if key in updates[section_key]:
-                    new_line = toml_ensure(f"{km.group(1)}{key} = {updates[section_key][key]}")
+                    new_line = toml_ensure(f"{km.group(1)}{key} = {toml_value(updates[section_key][key])}")
                     if new_line != line:
                         out[i] = new_line
                         changed = True
-                    found[section_key] = True
-    # append missing sections/keys
+                    found[section_key].add(key)
+
+    section_ends: dict[str | None, int] = {None: len(out)}
+    current_section = None
+    first_section = len(out)
+    for i, line in enumerate(out):
+        sm = re.match(r'^\[([^\]]+)\]\s*$', line.strip())
+        if sm:
+            if current_section is None:
+                first_section = i
+            section_ends[current_section] = i
+            raw_section = sm.group(1)
+            section_match = re.match(r'^model_providers\.(.+)$', raw_section)
+            current_section = section_match.group(1) if section_match else raw_section
+            section_ends.setdefault(current_section, len(out))
+    section_ends[current_section] = len(out)
+
+    insertions: dict[int, list[tuple[int, list[str]]]] = {}
     for section_key, kv in updates.items():
-        if found[section_key]:
+        missing = [key for key in kv if key not in found[section_key]]
+        if not missing:
+            continue
+        if section_key in section_ends and section_key is not None:
+            index = section_ends[section_key]
+            insertions.setdefault(index, []).append((0, [
+                toml_ensure(f"{key} = {toml_value(kv[key])}") for key in missing
+            ]))
+            continue
+        if section_key is None and first_section < len(out):
+            insertions.setdefault(first_section, []).append((0, [
+                toml_ensure(f"{key} = {toml_value(kv[key])}") for key in missing
+            ]))
             continue
         if section_key is None:
-            for key, value in kv.items():
-                if not any(re.match(rf'^\s*{key}\s*=', l) for l in out):
-                    out.append(toml_ensure(f"{key} = {value}"))
-                    changed = True
-        else:
-            # append new section at end
-            out.append("")
-            out.append(f"[model_providers.{section_key}]")
-            for key, value in kv.items():
-                out.append(toml_ensure(f"{key} = {value}"))
-            changed = True
+            insertions.setdefault(len(out), []).append((0, [
+                toml_ensure(f"{key} = {toml_value(kv[key])}") for key in missing
+            ]))
+            continue
+        insertions.setdefault(len(out), []).append((1, [
+            "",
+            f"[model_providers.{section_key}]",
+            *[toml_ensure(f"{key} = {toml_value(kv[key])}") for key in missing],
+        ]))
+
+    for index in sorted(insertions, reverse=True):
+        new_lines = []
+        for _, lines_to_insert in sorted(insertions[index], key=lambda item: item[0]):
+            new_lines.extend(lines_to_insert)
+        out[index:index] = new_lines
+        changed = True
+
     return out, changed
 
 

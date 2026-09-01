@@ -23,6 +23,7 @@ PORT = 47653
 
 
 def log(message: str) -> None:
+    LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
     with open(LOG_FILE, "a", encoding="utf-8") as f:
         f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')}  {message}\n")
 
@@ -42,7 +43,10 @@ def main() -> None:
         sys.exit(0)
 
     log(f"watch started: {YAML_FILE} -> {PY_SCRIPT}")
-    last = fingerprint()
+    try:
+        last = fingerprint()
+    except FileNotFoundError:
+        last = None
 
     while True:
         time.sleep(2)
@@ -74,7 +78,7 @@ def main() -> None:
             try:
                 last = fingerprint()
             except FileNotFoundError:
-                pass
+                last = None
 
 
 if __name__ == "__main__":
