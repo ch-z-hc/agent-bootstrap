@@ -45,6 +45,12 @@ powershell -ExecutionPolicy Bypass -File "$HOME\.agents\sync-agent-vendors.ps1"
 Start-Process python -ArgumentList "$HOME\.agents\watch-agent-vendors.py" -WindowStyle Hidden
 ```
 
+也可以直接从仓库目录启动 watcher；它会调用同目录下的同步脚本：
+
+```powershell
+Start-Process python -ArgumentList ".\watch-agent-vendors.py" -WorkingDirectory "." -WindowStyle Hidden
+```
+
 watcher 使用 localhost 端口 `47653` 保证只运行一个实例，并将运行记录写入 `~/.agents/watch-agent-vendors.log`。
 
 ## 配置格式

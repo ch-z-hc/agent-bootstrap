@@ -15,7 +15,9 @@ from pathlib import Path
 HOME = Path.home()
 AGENTS = HOME / ".agents"
 YAML_FILE = AGENTS / "agent-vendors.yaml"
-PY_SCRIPT = AGENTS / "agent_vendors.py"
+# Resolve the synchronizer beside this watcher so the repository can be run
+# directly from any directory without relying on a copied script in ~/.agents.
+PY_SCRIPT = Path(__file__).resolve().with_name("agent_vendors.py")
 LOG_FILE = AGENTS / "watch-agent-vendors.log"
 PORT = 47653
 
