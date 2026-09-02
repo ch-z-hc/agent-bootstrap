@@ -107,23 +107,23 @@ def provider_add(data: dict, provider_id: str | None = None, input_fn=input, sec
     providers = data.setdefault("providers", {})
     if not isinstance(providers, dict):
         raise ValueError("providers 必须是对象")
-    provider_id = validate_provider_id(provider_id or input_fn("provider ID: "))
+    provider_id = validate_provider_id(provider_id or input_fn("provider ID："))
     if provider_id in providers:
         raise ValueError(f"provider 已存在: {provider_id}")
-    display = input_fn(f"显示名称 [{provider_id}]: ").strip() or provider_id
-    base = input_fn("Base URL: ").strip().rstrip("/")
+    display = input_fn(f"显示名称 [{provider_id}]：").strip() or provider_id
+    base = input_fn("Base URL：").strip().rstrip("/")
     if not base:
         raise ValueError("Base URL 不能为空")
     while True:
-        api = input_fn("API 类型（openai-completions / openai-responses）[openai-completions]: ").strip() or "openai-completions"
+        api = input_fn("API 类型（openai-completions / openai-responses）[openai-completions]：").strip() or "openai-completions"
         if api in {"openai-completions", "openai-responses"}:
             break
-        print("API 类型只能是 openai-completions 或 openai-responses。")
-    env_name = input_fn("API key 环境变量（可回车跳过）: ").strip()
+        ui_warn("API 类型只能是 openai-completions 或 openai-responses。")
+    env_name = input_fn("API key 环境变量（可回车跳过）：").strip()
     if secret_fn is None:
         secret_fn = getpass.getpass
-    key = secret_fn("API key（可回车稍后配置）: ").strip()
-    query_mode = input_fn("model 来源（auto=自动查询，manual=手动，merge=查询后补充）[auto]: ").strip().lower() or "auto"
+    key = secret_fn("API key（可回车稍后配置）：").strip()
+    query_mode = input_fn("model 来源（auto = 自动查询，manual = 手动，merge = 查询后补充）[auto]：").strip().lower() or "auto"
     if query_mode not in {"auto", "manual", "merge"}:
         raise ValueError("model 来源只能是 auto、manual 或 merge")
     models = {}
@@ -131,11 +131,11 @@ def provider_add(data: dict, provider_id: str | None = None, input_fn=input, sec
         query_key = key or (os.environ.get(env_name) if env_name else None)
         models = discover_provider_models(base, query_key)
         if models:
-            print(f"已查询到 {len(models)} 个 model")
+            ui_ok(f"已查询到 {len(models)} 个 model")
         else:
-            print("自动查询失败，请手动输入 model。")
+            ui_warn("自动查询失败，请手动输入 model。")
     if query_mode == "manual" or query_mode == "merge" or not models:
-        raw_models = input_fn("model ID（逗号分隔，可回车稍后配置）: ").strip()
+        raw_models = input_fn("model ID（逗号分隔，可回车稍后配置）：").strip()
         for mid in (part.strip() for part in raw_models.split(",")):
             if mid:
                 models.setdefault(mid, {"name": mid})
@@ -159,7 +159,7 @@ def provider_remove(data: dict, provider_id: str, force: bool = False) -> None:
         raise ValueError(f"provider 不存在: {provider_id}")
     refs = provider_references(data, provider_id)
     if refs and not force:
-        raise ValueError(f"provider 仍被 agent 使用: {', '.join(refs)}；请先改绑或使用 --force")
+        raise ValueError(f"provider 仍被 agent 使用： {', '.join(refs)}；请先改绑或使用 --force")
     del providers[provider_id]
 
 
@@ -177,18 +177,30 @@ def provider_command(argv: list[str]) -> int:
     remove.add_argument("--force", action="store_true", help="即使仍被 agent 引用也删除")
     args = parser.parse_args(argv)
     data = load_config()
+    if args.action != "list":
+        ui_header("Provider 管理", f"操作： {args.action}")
     if args.action == "list":
+        ui_header("Provider 管理", "已配置的 provider")
         providers = data.get("providers") or {}
         if not isinstance(providers, dict):
             raise ValueError("providers 必须是对象")
+        rows = []
         for pid, provider in providers.items():
             provider = provider if isinstance(provider, dict) else {}
-            print(f"{pid}\t{provider.get('displayName') or pid}\t{provider.get('baseURL') or '<empty>'}")
+            rows.append((str(pid), str(provider.get("displayName") or pid), str(provider.get("baseURL") or "<empty>")))
+        if not rows:
+            ui_warn("暂无 provider。使用 `provider add <id>` 新增。")
+            return 0
+        widths = [max(len(row[i]) for row in rows + [("ID", "名称", "Base URL")]) for i in range(3)]
+        print(f"  {'ID'.ljust(widths[0])}  {'名称'.ljust(widths[1])}  Base URL")
+        print(f"  {'-' * widths[0]}  {'-' * widths[1]}  {'-' * widths[2]}")
+        for pid, name, base in rows:
+            print(f"  {pid.ljust(widths[0])}  {name.ljust(widths[1])}  {base}")
         return 0
     if args.action == "add":
         pid = provider_add(data, args.provider_id)
         save_config(data)
-        print(f"已新增 provider: {pid}")
+        ui_ok(f"已新增 provider： {pid}")
         return 0
     if args.action == "refresh":
         providers = data.get("providers") or {}
@@ -206,11 +218,11 @@ def provider_command(argv: list[str]) -> int:
         else:
             provider["models"] = models
         save_config(data)
-        print(f"已刷新 provider {args.provider_id}: {len(models)} 个 model")
+        ui_ok(f"已刷新 provider {args.provider_id}： {len(models)} 个 model")
         return 0
     provider_remove(data, args.provider_id, args.force)
     save_config(data)
-    print(f"已删除 provider: {args.provider_id}")
+    ui_ok(f"已删除 provider： {args.provider_id}")
     return 0
 
 
@@ -280,6 +292,50 @@ PATH_LABELS = {
 
 PLATFORM = "windows" if os.name == "nt" else ("macos" if sys.platform == "darwin" else "linux")
 
+# Keep the UI dependency-free. ANSI colors are enabled only for interactive
+# terminals and can be disabled with the standard NO_COLOR environment flag.
+_COLOR = sys.stdout.isatty() and not os.environ.get("NO_COLOR")
+_ANSI = {
+    "reset": "\x1b[0m",
+    "bold": "\x1b[1m",
+    "cyan": "\x1b[36m",
+    "green": "\x1b[32m",
+    "yellow": "\x1b[33m",
+    "red": "\x1b[31m",
+    "dim": "\x1b[2m",
+}
+
+
+def paint(text: str, color: str) -> str:
+    if not _COLOR:
+        return text
+    return f"{_ANSI[color]}{text}{_ANSI['reset']}"
+
+
+def ui_header(title: str, subtitle: str | None = None) -> None:
+    print()
+    print(paint("=" * 58, "cyan"))
+    print(paint(f"  {title}", "bold"))
+    if subtitle:
+        print(paint(f"  {subtitle}", "dim"))
+    print(paint("=" * 58, "cyan"))
+
+
+def ui_section(title: str) -> None:
+    print(f"\n{paint(f'[{title}]', 'cyan')}")
+
+
+def ui_ok(message: str) -> None:
+    print(f"{paint('OK', 'green')}  {message}")
+
+
+def ui_warn(message: str) -> None:
+    print(f"{paint('提示', 'yellow')}  {message}")
+
+
+def ui_error(message: str) -> None:
+    print(f"{paint('错误', 'red')}  {message}", file=sys.stderr)
+
 
 def model_catalog(data: dict, provider_id: str) -> dict:
     p = (data.get("providers") or {}).get(provider_id) or {}
@@ -332,11 +388,11 @@ def choose_index(prompt: str, count: int, input_fn=input, default: int = 1) -> i
         try:
             index = int(answer)
         except ValueError:
-            print("请输入菜单编号，或输入 q 取消。")
+            ui_warn("请输入菜单编号，或输入 q = 取消。")
             continue
         if 1 <= index <= count:
             return index
-        print(f"请输入 1 到 {count} 之间的编号。")
+        ui_warn(f"请输入 1 到 {count} 之间的编号。")
 
 
 def choose_provider_settings(data: dict, provider_id: str, input_fn=input) -> dict[str, str]:
@@ -358,26 +414,26 @@ def choose_provider_settings(data: dict, provider_id: str, input_fn=input) -> di
         presets.append(("自定义", "", current_api or "openai-completions"))
     else:
         presets.append(("自定义", "", current_api or "openai-completions"))
-    print(f"\n{provider_id} provider 设置:")
+    ui_section(f"{provider_id} provider 设置")
     for i, (name, url, api) in enumerate(presets, 1):
         suffix = f" — {url}" if url else ""
-        print(f"  {i}. {name}{suffix}")
+        print(f"  {i:>2}. {name}{suffix}")
     default = 1
     default_label = "当前配置" if current_url else presets[default - 1][0]
-    index = choose_index(f"选择地址（回车={default_label}，q=取消）: ", len(presets), input_fn, default)
+    index = choose_index(f"选择地址（回车 = {default_label}，q = 取消）：", len(presets), input_fn, default)
     name, url, api = presets[index - 1]
     if name == "自定义" or not url:
-        url = input_fn("Base URL: ").strip()
+        url = input_fn("Base URL：").strip()
         if not url:
             raise ValueError("自定义 Base URL 不能为空")
         while True:
-            entered = input_fn(f"API 类型（openai-completions / openai-responses）[{api}]: ").strip()
+            entered = input_fn(f"API 类型（openai-completions / openai-responses）[{api}]：").strip()
             if not entered:
                 break
             if entered in {"openai-completions", "openai-responses"}:
                 api = entered
                 break
-            print("API 类型只能是 openai-completions 或 openai-responses。")
+            ui_warn("API 类型只能是 openai-completions 或 openai-responses。")
     return {"baseURL": url, "api": api}
 
 
@@ -385,31 +441,32 @@ def choose_models(provider_id: str, catalog: dict, input_fn=input) -> dict:
     ids = list(catalog)
     if not ids:
         raise ValueError(f"{provider_id} 没有可选模型")
-    print(f"\n{provider_id} models（当前全部已勾选；输入编号切换选择）:")
+    ui_section(f"{provider_id} models")
+    print(paint("当前全部已勾选；输入编号切换选择", "dim"))
     for i, mid in enumerate(ids, 1):
         label = (catalog[mid] or {}).get("name") or mid
         print(f"  {i:>2}. [x] {label} ({mid})")
     while True:
-        answer = input_fn("保留哪些模型？回车/all=全部，输入编号如 1,3，none=不保留，q=取消: ").strip().lower()
+        answer = input_fn("保留哪些模型？回车 / all = 全部，输入编号如 1, 3，none = 不保留，q = 取消：").strip().lower()
         if answer in {"q", "quit", "exit"}:
             raise KeyboardInterrupt
         if not answer or answer == "all":
             selected = ids
         elif answer == "none":
-            print(f"{provider_id} 至少要保留一个 model。")
+            ui_warn(f"{provider_id} 至少要保留一个 model。")
             continue
         else:
             try:
                 indexes = [int(x.strip()) for x in answer.split(",") if x.strip()]
             except ValueError:
-                print("模型编号格式应为逗号分隔的数字，例如 1,3。")
+                ui_warn("模型编号格式应为逗号分隔的数字，例如 1, 3。")
                 continue
             if any(i < 1 or i > len(ids) for i in indexes):
-                print(f"模型编号必须在 1 到 {len(ids)} 之间。")
+                ui_warn(f"模型编号必须在 1 到 {len(ids)} 之间。")
                 continue
             selected = [ids[i - 1] for i in indexes]
             if not selected:
-                print(f"{provider_id} 至少要保留一个 model。")
+                ui_warn(f"{provider_id} 至少要保留一个 model。")
                 continue
         return {mid: catalog[mid] for mid in selected}
 
@@ -418,7 +475,7 @@ def choose_one(label: str, provider_id: str, catalog: dict, current: str = "", i
     ids = list(catalog)
     if not ids:
         raise ValueError(f"{provider_id} 没有可选模型")
-    print(f"\n{label}（provider: {provider_id}）:")
+    ui_section(f"{label}（provider: {provider_id}）")
     for i, mid in enumerate(ids, 1):
         marker = "*" if mid == current else " "
         name = (catalog[mid] or {}).get("name") or mid
@@ -426,13 +483,13 @@ def choose_one(label: str, provider_id: str, catalog: dict, current: str = "", i
     default = ids.index(current) + 1 if current in catalog else (
         ids.index(PREFERRED[provider_id]) + 1 if PREFERRED.get(provider_id) in catalog else 1
     )
-    return ids[choose_index("选择一个 model 编号，回车保留当前/推荐值，q=取消: ", len(ids), input_fn, default) - 1]
+    return ids[choose_index("选择一个 model 编号，回车保留当前 / 推荐值，q = 取消：", len(ids), input_fn, default) - 1]
 
 
 def ask_key(provider_id: str) -> str:
     old = ((load_config().get("providers") or {}).get(provider_id) or {}).get("apiKey")
     hint = "已设置，回车保持原值" if old else "未设置，请输入"
-    return getpass.getpass(f"{provider_id} API key（{hint}）: ").strip()
+    return getpass.getpass(f"{provider_id} API key（{hint}）：").strip()
 
 
 def path_candidates(key: str) -> list[Path]:
@@ -469,9 +526,9 @@ def choose_path(data: dict, key: str, input_fn=input) -> Path:
     candidates = path_candidates(key)
     default = Path(os.path.expandvars(os.path.expanduser(str(configured)))) if configured else (candidates[0] if candidates else None)
     if default:
-        prompt = f"{PATH_LABELS[key]} [{default}]，回车接受: "
+        prompt = f"{PATH_LABELS[key]} [{default}]，回车接受："
     else:
-        prompt = f"{PATH_LABELS[key]}（未探测到现有文件，请输入路径）: "
+        prompt = f"{PATH_LABELS[key]}（未探测到现有文件，请输入路径）："
     answer = input_fn(prompt).strip()
     if answer:
         return Path(os.path.expandvars(os.path.expanduser(answer))).resolve()
@@ -596,7 +653,7 @@ def main() -> int:
         try:
             return provider_command(sys.argv[2:])
         except (OSError, ValueError, yaml.YAMLError) as exc:
-            print(f"配置失败: {exc}", file=sys.stderr)
+            ui_error(f"配置失败：{exc}")
             return 2
     parser = argparse.ArgumentParser(description="配置 Agent Vendors provider 和 model")
     parser.add_argument("--yes", action="store_true", help="跳过最终确认")
@@ -619,26 +676,34 @@ def main() -> int:
         choices = choose_agent_models(data, selected)
         out = proposed(data, selected, keys, choices, paths, provider_settings)
     except KeyboardInterrupt:
-        print("\n已取消")
+        ui_warn("已取消")
         return 130
     except (OSError, ValueError, yaml.YAMLError) as exc:
-        print(f"配置失败: {exc}", file=sys.stderr)
+        ui_error(f"配置失败：{exc}")
         return 2
-    print("\n将更新 provider: " + ", ".join(pids))
+    ui_header("Agent Vendors", "配置向导")
+    ui_section("变更预览")
+    print("将更新 provider：" + ", ".join(pids))
     for pid in pids:
-        print(f"  {pid}: {len(selected[pid])} 个 model，API key {'更新' if keys[pid] else '保持原值'}")
-        print(f"       baseURL={provider_settings[pid]['baseURL']} ({provider_settings[pid]['api']})")
-    print("  agent defaults: " + ", ".join(f"{k}={v}" for k, v in choices.items()))
+        key_status = paint("更新", "green") if keys[pid] else paint("保持原值", "dim")
+        print(f"  {pid}: {len(selected[pid])} 个 model，API key {key_status}")
+        print(f"       Base URL = {provider_settings[pid]['baseURL']} ({provider_settings[pid]['api']})")
+    ui_section("Agent 默认模型")
+    for key, value in choices.items():
+        print(f"  {key} = {value}")
+    ui_section("配置路径")
     path_summary = paths.get(PLATFORM, {})
-    print("  config paths: " + ", ".join(f"{k}={v}" for k, v in path_summary.items() if k in PATH_LABELS))
-    if not args.yes and input("应用以上配置？[Y/n] ").strip().lower() not in ("", "y", "yes"):
-        print("已取消")
+    for key, value in path_summary.items():
+        if key in PATH_LABELS:
+            print(f"  {PATH_LABELS[key]} = {value}")
+    if not args.yes and input("\n应用以上配置？ [Y/n] ").strip().lower() not in ("", "y", "yes"):
+        ui_warn("已取消")
         return 0
     if args.dry_run:
-        print("\n[dry-run] 不写入 YAML，也不会触发同步。")
+        ui_warn("dry-run 模式：不写入 YAML，也不会触发同步。")
         return 0
     save_config(out)
-    print(f"已保存: {YAML_FILE}")
+    ui_ok(f"已保存：{YAML_FILE}")
     if not args.no_sync:
         return run_sync(False)
     return 0
