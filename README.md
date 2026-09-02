@@ -2,11 +2,11 @@
 
 将多个 coding agent 的 provider 和 model 配置集中到一个 YAML 文件，并同步到各 agent 的本地配置。
 
-支持的目标包括 Claude、Codex、Pi、ZCode 和 DSH。修改 `~/.agents/agent-vendors.yaml` 后，可以手动同步，或运行 watcher 自动同步。
+支持 Claude Code、Codex、Pi、ZCode 和 DSH。项目现在以 CLI 为主入口；不会启动 Web 页面，也不会自动创建备份文件。
 
-推荐使用内置的 CLI 配置向导：只选择 model、填写 API key，程序会自动收敛为 `gpt` 和 `opencode-go` 两个 provider，并修正各 agent 的引用。
+CLI 会把配置收敛为两个 provider：`gpt` 和 `opencode-go`。每个 provider 的 API key、Base URL、API 类型和 model 都可以在向导中选择或自定义。
 
-## 安装
+## 安装（Windows）
 
 ```powershell
 git clone https://github.com/ch-z-hc/agent-vendors-sync.git
@@ -15,11 +15,13 @@ Copy-Item .\agent_vendors_cli.py, .\start-agent-vendors-cli.ps1 "$HOME\.agents\"
 Copy-Item .\agent-vendors.example.yaml "$HOME\.agents\agent-vendors.yaml"
 ```
 
-安装 Python 依赖（支持 Python 3.7+）：
+安装 Python 依赖：
 
 ```powershell
 python -m pip install -r requirements.txt
 ```
+
+项目使用 Python 3.10 或更高版本。Linux / macOS 可直接用 `python3` 替换上面的 `python`，并将目标目录替换为 `~/.agents`。
 
 ## 使用
 
@@ -36,6 +38,16 @@ powershell -ExecutionPolicy Bypass -File "$HOME\.agents\start-agent-vendors-cli.
 ```
 
 向导会先让你确认 Claude Code、Codex、Pi、DSH 的配置文件路径（自动探测到的现有文件会作为默认值），再分别为 `gpt` 和 `opencode-go` 选择常用 Base URL，或输入自定义 Base URL 与 API 类型（`openai-completions` / `openai-responses`）。随后显示完整 model 目录（包括 `muse-spark-1.2-contributor`、Kimi、GLM、MiniMax、Qwen 等），可按编号勾选保留。最后逐项显示 Codex、Claude Code（Haiku / Sonnet / Opus / 默认）、Pi 和 DSH 的 model 选择。输入 API key 时直接回车可保留已有值。确认后移除其他 provider，并同步所有 agent。路径会写入 YAML 的 `paths` 节点，Windows / Linux 可以分别保存自己的路径。
+
+常用参数：
+
+```powershell
+python "$HOME\.agents\agent_vendors_cli.py" --dry-run  # 只预览，不写入
+python "$HOME\.agents\agent_vendors_cli.py" --yes      # 跳过最终确认
+python "$HOME\.agents\agent_vendors_cli.py" --no-sync  # 保存 YAML，但不同步 agent
+```
+
+model 列表由 YAML 中已有 model、Codex 本地 `models.json`（如果存在）和内置常见模型合并而成；因此新安装的 model 也可以先在 CLI 中选中，再写入 YAML。
 
 先编辑 `~/.agents/agent-vendors.yaml`，然后预览变更：
 
@@ -82,9 +94,20 @@ python "$HOME\.agents\agent_vendors.py" init
 
 `init` 默认不会覆盖已有 YAML；需要覆盖时显式加 `--force`。
 
+如果要使用另一份 YAML，可设置环境变量：
+
+```powershell
+$env:AGENT_VENDORS_FILE = "D:\path\agent-vendors.yaml"
+python .\agent_vendors_cli.py --dry-run
+```
+
+`paths.windows`、`paths.linux` 和 `paths.macos` 可以分别保存不同系统的配置文件地址。CLI 会自动探测常见位置，也允许手动输入不存在或自定义路径。
+
+Claude Code 当前通过 `opencode-go` provider 写入 `ANTHROPIC_*` 环境变量；Codex 使用 `gpt`，Pi / DSH / ZCode 会按 YAML 中的 provider 和 model 同步。
+
 ## 设计参考
 
-交互方式参考了 [One API](https://github.com/songquanpeng/one-api) 的渠道/模型表单、[Open WebUI](https://github.com/open-webui/open-webui) 的 provider-agnostic 设置，以及 [Claude Code Manager UI](https://github.com/Rylaispirit/claude-code-manager-ui) 的 local-first 和凭据不回显原则。本项目采用同样的本地监听、结构化表单和显式同步步骤，但不引入前端构建链或数据库。
+交互方式参考了 [cc-switch-helper](https://github.com/luckybilly/cc-switch-helper) 的交互菜单，以及 [One API](https://github.com/songquanpeng/one-api) 的渠道/模型表单。本项目使用本地 YAML 和 CLI，不引入前端构建链或数据库。
 
 ## 安全提示
 
