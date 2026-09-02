@@ -37,6 +37,20 @@ python "$HOME\.agents\agent_vendors_cli.py"
 powershell -ExecutionPolicy Bypass -File "$HOME\.agents\start-agent-vendors-cli.ps1"
 ```
 
+新增或管理 provider：
+
+```powershell
+python "$HOME\.agents\agent_vendors_cli.py" provider list
+python "$HOME\.agents\agent_vendors_cli.py" provider add my-gateway
+python "$HOME\.agents\agent_vendors_cli.py" provider refresh my-gateway
+python "$HOME\.agents\agent_vendors_cli.py" provider refresh my-gateway --merge
+python "$HOME\.agents\agent_vendors_cli.py" provider remove my-gateway
+```
+
+`provider add` 会交互填写显示名、Base URL、API 类型、API key 来源和 model。model 默认会请求兼容 OpenAI 的 `GET /models` 自动发现，也可以选择纯手动输入，或在自动发现后补充自定义 model。删除仍被 agent 使用的 provider 会被拒绝，确认改绑后再使用 `--force`。
+
+`provider refresh <id>` 会重新查询并替换该 provider 的 model 列表；加上 `--merge` 则只追加 / 更新查询结果，不删除现有 model。
+
 向导会先让你确认 Claude Code、Codex、Pi、DSH 的配置文件路径（自动探测到的现有文件会作为默认值），再逐个编辑 YAML 中已有的 provider。`gpt` 默认从自定义入口开始，适合代理或自建网关；常用厂商预设只用于方便填写 Base URL。provider 不会被强制合并或删除，agent 也会继续使用各自原来的 provider。随后显示 model 目录，可按编号勾选保留；最后逐项显示各 agent 的 model 选择。输入 API key 时直接回车可保留已有值。确认后同步所有 agent。路径会写入 YAML 的 `paths` 节点，Windows / Linux 可以分别保存自己的路径。
 
 常用参数：

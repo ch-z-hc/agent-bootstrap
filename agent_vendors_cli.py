@@ -9,9 +9,13 @@ from __future__ import annotations
 import argparse
 import copy
 import getpass
+import json
 import os
 import subprocess
 import sys
+import re
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 from pathlib import Path
 
 import yaml
@@ -35,6 +39,174 @@ def save_config(data: dict) -> None:
     tmp = YAML_FILE.with_suffix(".yaml.tmp")
     tmp.write_text(yaml.safe_dump(data, allow_unicode=True, sort_keys=False), encoding="utf-8")
     tmp.replace(YAML_FILE)
+
+
+PROVIDER_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]*$")
+
+
+def validate_provider_id(provider_id: str) -> str:
+    value = str(provider_id or "").strip()
+    if not PROVIDER_ID_RE.fullmatch(value):
+        raise ValueError("provider ID 只能包含字母、数字、下划线、点、冒号或短横线，且不能以符号开头")
+    return value
+
+
+def provider_references(data: dict, provider_id: str) -> list[str]:
+    refs = []
+    for name, agent in (data.get("agents") or {}).items():
+        if not isinstance(agent, dict):
+            continue
+        direct = {agent.get("provider"), agent.get("defaultProvider")}
+        listed = agent.get("providers")
+        if isinstance(listed, list):
+            direct.update(listed)
+        elif isinstance(listed, dict):
+            direct.update(listed)
+        if provider_id in direct:
+            refs.append(str(name))
+    return refs
+
+
+def discover_provider_models(base_url: str, api_key: str | None = None, opener=urlopen) -> dict[str, dict[str, str]]:
+    """Discover model IDs from an OpenAI-compatible ``/models`` endpoint."""
+    url = str(base_url or "").rstrip("/") + "/models"
+    headers = {"Accept": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    request = Request(url, headers=headers, method="GET")
+    try:
+        with opener(request, timeout=10) as response:
+            payload = json.load(response)
+    except (OSError, ValueError, TypeError, HTTPError, URLError):
+        return {}
+    rows = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(rows, list):
+        rows = payload.get("models") if isinstance(payload, dict) else None
+    if not isinstance(rows, list):
+        return {}
+    result = {}
+    for row in rows:
+        if isinstance(row, str):
+            mid, label = row, row
+        elif isinstance(row, dict):
+            mid = row.get("id") or row.get("slug") or row.get("name")
+            label = row.get("name") or mid
+        else:
+            continue
+        if mid:
+            result[str(mid)] = {"name": str(label)}
+    return result
+
+
+def provider_add(data: dict, provider_id: str | None = None, input_fn=input, secret_fn=None) -> str:
+    providers = data.setdefault("providers", {})
+    if not isinstance(providers, dict):
+        raise ValueError("providers 必须是对象")
+    provider_id = validate_provider_id(provider_id or input_fn("provider ID: "))
+    if provider_id in providers:
+        raise ValueError(f"provider 已存在: {provider_id}")
+    display = input_fn(f"显示名称 [{provider_id}]: ").strip() or provider_id
+    base = input_fn("Base URL: ").strip().rstrip("/")
+    if not base:
+        raise ValueError("Base URL 不能为空")
+    while True:
+        api = input_fn("API 类型（openai-completions / openai-responses）[openai-completions]: ").strip() or "openai-completions"
+        if api in {"openai-completions", "openai-responses"}:
+            break
+        print("API 类型只能是 openai-completions 或 openai-responses。")
+    env_name = input_fn("API key 环境变量（可回车跳过）: ").strip()
+    if secret_fn is None:
+        secret_fn = getpass.getpass
+    key = secret_fn("API key（可回车稍后配置）: ").strip()
+    query_mode = input_fn("model 来源（auto=自动查询，manual=手动，merge=查询后补充）[auto]: ").strip().lower() or "auto"
+    if query_mode not in {"auto", "manual", "merge"}:
+        raise ValueError("model 来源只能是 auto、manual 或 merge")
+    models = {}
+    if query_mode in {"auto", "merge"}:
+        query_key = key or (os.environ.get(env_name) if env_name else None)
+        models = discover_provider_models(base, query_key)
+        if models:
+            print(f"已查询到 {len(models)} 个 model")
+        else:
+            print("自动查询失败，请手动输入 model。")
+    if query_mode == "manual" or query_mode == "merge" or not models:
+        raw_models = input_fn("model ID（逗号分隔，可回车稍后配置）: ").strip()
+        for mid in (part.strip() for part in raw_models.split(",")):
+            if mid:
+                models.setdefault(mid, {"name": mid})
+    entry = {"displayName": display, "baseURL": base, "api": api}
+    if env_name:
+        entry["apiKeyEnv"] = env_name
+    if key:
+        entry["apiKey"] = key
+    if models:
+        entry["models"] = models
+    providers[provider_id] = entry
+    return provider_id
+
+
+def provider_remove(data: dict, provider_id: str, force: bool = False) -> None:
+    providers = data.get("providers") or {}
+    if not isinstance(providers, dict):
+        raise ValueError("providers 必须是对象")
+    provider_id = validate_provider_id(provider_id)
+    if provider_id not in providers:
+        raise ValueError(f"provider 不存在: {provider_id}")
+    refs = provider_references(data, provider_id)
+    if refs and not force:
+        raise ValueError(f"provider 仍被 agent 使用: {', '.join(refs)}；请先改绑或使用 --force")
+    del providers[provider_id]
+
+
+def provider_command(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(prog="agent_vendors_cli.py provider", description="管理自定义 provider")
+    sub = parser.add_subparsers(dest="action", required=True)
+    sub.add_parser("list", help="列出 provider")
+    add = sub.add_parser("add", help="新增 provider")
+    add.add_argument("provider_id", nargs="?", help="provider ID；省略则交互输入")
+    refresh = sub.add_parser("refresh", help="从 provider 的 /models 刷新 model 列表")
+    refresh.add_argument("provider_id")
+    refresh.add_argument("--merge", action="store_true", help="合并发现结果，不删除现有 model")
+    remove = sub.add_parser("remove", help="删除 provider")
+    remove.add_argument("provider_id")
+    remove.add_argument("--force", action="store_true", help="即使仍被 agent 引用也删除")
+    args = parser.parse_args(argv)
+    data = load_config()
+    if args.action == "list":
+        providers = data.get("providers") or {}
+        if not isinstance(providers, dict):
+            raise ValueError("providers 必须是对象")
+        for pid, provider in providers.items():
+            provider = provider if isinstance(provider, dict) else {}
+            print(f"{pid}\t{provider.get('displayName') or pid}\t{provider.get('baseURL') or '<empty>'}")
+        return 0
+    if args.action == "add":
+        pid = provider_add(data, args.provider_id)
+        save_config(data)
+        print(f"已新增 provider: {pid}")
+        return 0
+    if args.action == "refresh":
+        providers = data.get("providers") or {}
+        if not isinstance(providers, dict) or args.provider_id not in providers:
+            raise ValueError(f"provider 不存在: {args.provider_id}")
+        provider = providers[args.provider_id] if isinstance(providers[args.provider_id], dict) else {}
+        key = provider.get("apiKey") or (os.environ.get(str(provider["apiKeyEnv"])) if provider.get("apiKeyEnv") else None)
+        models = discover_provider_models(str(provider.get("baseURL") or ""), key)
+        if not models:
+            raise ValueError("未查询到 model，请检查 Base URL、API key 或网关是否支持 /models")
+        if args.merge:
+            old = provider.get("models") if isinstance(provider.get("models"), dict) else {}
+            old.update(models)
+            provider["models"] = old
+        else:
+            provider["models"] = models
+        save_config(data)
+        print(f"已刷新 provider {args.provider_id}: {len(models)} 个 model")
+        return 0
+    provider_remove(data, args.provider_id, args.force)
+    save_config(data)
+    print(f"已删除 provider: {args.provider_id}")
+    return 0
 
 
 PREFERRED = {"gpt": "gpt-5.6-sol", "opencode-go": "deepseek-v4-pro"}
@@ -414,6 +586,12 @@ def run_sync(dry_run: bool) -> int:
 
 
 def main() -> int:
+    if len(sys.argv) > 1 and sys.argv[1] == "provider":
+        try:
+            return provider_command(sys.argv[2:])
+        except (OSError, ValueError, yaml.YAMLError) as exc:
+            print(f"配置失败: {exc}", file=sys.stderr)
+            return 2
     parser = argparse.ArgumentParser(description="配置 Agent Vendors provider 和 model")
     parser.add_argument("--yes", action="store_true", help="跳过最终确认")
     parser.add_argument("--dry-run", action="store_true", help="只显示同步预览，不写入")

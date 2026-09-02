@@ -1,4 +1,6 @@
 import unittest
+import io
+import json
 from pathlib import Path
 
 import agent_vendors_cli as cli
@@ -63,6 +65,42 @@ class AgentVendorsCliTests(unittest.TestCase):
         # keeps only endpoints known to support its dual-protocol use case.
         result = cli.choose_provider_settings({}, "gpt", input_fn=lambda _: "3")
         self.assertEqual(result["baseURL"], "https://api.deepseek.com")
+
+    def test_provider_add_creates_custom_provider(self):
+        data = {"providers": {}}
+        answers = iter(["My Gateway", "https://gateway.example/v1", "openai-responses", "MY_KEY", "manual", "model-a, model-b"])
+        pid = cli.provider_add(data, "my-gateway", input_fn=lambda _: next(answers), secret_fn=lambda _: "secret")
+        self.assertEqual(pid, "my-gateway")
+        self.assertEqual(data["providers"][pid]["api"], "openai-responses")
+        self.assertEqual(set(data["providers"][pid]["models"]), {"model-a", "model-b"})
+
+    def test_discover_provider_models_reads_openai_shape(self):
+        payload = json.dumps({"data": [{"id": "model-a"}, {"id": "model-b", "name": "Model B"}]}).encode()
+
+        class Response(io.BytesIO):
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                self.close()
+
+        seen = {}
+
+        def opener(request, timeout):
+            seen["url"] = request.full_url
+            seen["auth"] = request.headers.get("Authorization")
+            return Response(payload)
+
+        result = cli.discover_provider_models("https://gateway.example/v1/", "secret", opener)
+        self.assertEqual(set(result), {"model-a", "model-b"})
+        self.assertEqual(seen, {"url": "https://gateway.example/v1/models", "auth": "Bearer secret"})
+
+    def test_provider_remove_refuses_bound_provider(self):
+        data = {"providers": {"custom": {}}, "agents": {"pi": {"provider": "custom"}}}
+        with self.assertRaises(ValueError):
+            cli.provider_remove(data, "custom")
+        cli.provider_remove(data, "custom", force=True)
+        self.assertNotIn("custom", data["providers"])
 
 
 if __name__ == "__main__":
