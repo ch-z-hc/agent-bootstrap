@@ -4,7 +4,7 @@
 
 支持 Claude Code、Codex、Pi、ZCode 和 DSH。项目现在以 CLI 为主入口；不会启动 Web 页面，也不会自动创建备份文件。
 
-CLI 会把配置收敛为两个 provider：`gpt` 和 `opencode-go`。每个 provider 的 API key、Base URL、API 类型和 model 都可以在向导中选择或自定义。
+CLI 会保留 YAML 中已有的 provider 注册表，只编辑现有 provider 的 API key、Base URL、API 类型和 model；不会强制合并或删除 provider。
 
 ## 安装（Windows）
 
@@ -37,7 +37,7 @@ python "$HOME\.agents\agent_vendors_cli.py"
 powershell -ExecutionPolicy Bypass -File "$HOME\.agents\start-agent-vendors-cli.ps1"
 ```
 
-向导会先让你确认 Claude Code、Codex、Pi、DSH 的配置文件路径（自动探测到的现有文件会作为默认值），再为 `gpt` 选择常用厂商的 Base URL，或输入自定义 Base URL；`opencode-go` 保留官方地址和自定义入口。两者都支持选择 API 类型（`openai-completions` / `openai-responses`）。`gpt` 默认从自定义入口开始，适合代理或自建网关；预设只保留 OpenAI、DeepSeek、OpenRouter 和 SiliconFlow 等常用地址。随后显示完整 model 目录（包括 `muse-spark-1.2-contributor`、Kimi、GLM、MiniMax、Qwen 等），可按编号勾选保留。最后逐项显示 Codex、Claude Code（Haiku / Sonnet / Opus / 默认）、Pi 和 DSH 的 model 选择。输入 API key 时直接回车可保留已有值。确认后移除其他 provider，并同步所有 agent。路径会写入 YAML 的 `paths` 节点，Windows / Linux 可以分别保存自己的路径。
+向导会先让你确认 Claude Code、Codex、Pi、DSH 的配置文件路径（自动探测到的现有文件会作为默认值），再逐个编辑 YAML 中已有的 provider。`gpt` 默认从自定义入口开始，适合代理或自建网关；常用厂商预设只用于方便填写 Base URL。provider 不会被强制合并或删除，agent 也会继续使用各自原来的 provider。随后显示 model 目录，可按编号勾选保留；最后逐项显示各 agent 的 model 选择。输入 API key 时直接回车可保留已有值。确认后同步所有 agent。路径会写入 YAML 的 `paths` 节点，Windows / Linux 可以分别保存自己的路径。
 
 常用参数：
 

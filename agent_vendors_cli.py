@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Interactive, small-surface configuration wizard for agent-vendors.yaml.
 
-Only GPT and OpenCode Go are kept.  The wizard asks for write-only API keys and
-model selections, then rewrites agent references so the next sync is coherent.
+The wizard edits the provider registry in place.  It asks for write-only API
+keys and model selections, then keeps each agent's existing provider binding.
 """
 from __future__ import annotations
 
@@ -37,7 +37,6 @@ def save_config(data: dict) -> None:
     tmp.replace(YAML_FILE)
 
 
-KEEP = ("gpt", "opencode-go")
 PREFERRED = {"gpt": "gpt-5.6-sol", "opencode-go": "deepseek-v4-pro"}
 MODEL_EXTRAS = {
     "gpt": {
@@ -137,6 +136,14 @@ def model_catalog(data: dict, provider_id: str) -> dict:
     return {}
 
 
+def provider_ids(data: dict) -> list[str]:
+    """Return the configured provider registry without imposing a fixed set."""
+    providers = data.get("providers") or {}
+    if not isinstance(providers, dict) or not providers:
+        raise ValueError("至少需要配置一个 provider")
+    return [str(pid) for pid in providers]
+
+
 def choose_index(prompt: str, count: int, input_fn=input, default: int = 1) -> int:
     """Read a menu index with ccswitch-style retry instead of a traceback."""
     while True:
@@ -162,8 +169,6 @@ def choose_provider_settings(data: dict, provider_id: str, input_fn=input) -> di
     if not current_api:
         wire = str(current.get("wireApi") or "")
         current_api = "openai-responses" if wire == "responses" else "openai-completions"
-    if provider_id not in {"gpt", "opencode-go"}:
-        raise ValueError(f"不支持的 provider: {provider_id}")
     presets = []
     if current_url:
         presets.append(("当前配置", current_url, current_api))
@@ -171,8 +176,10 @@ def choose_provider_settings(data: dict, provider_id: str, input_fn=input) -> di
         # A GPT provider in this project is normally a user-supplied proxy.
         presets.append(("自定义", "", current_api or "openai-completions"))
         presets.extend(COMMON_BASE_URL_PRESETS)
-    else:
+    elif provider_id == "opencode-go":
         presets.append(("OpenCode Go 官方", "https://opencode.ai/zen/go/v1", "openai-completions"))
+        presets.append(("自定义", "", current_api or "openai-completions"))
+    else:
         presets.append(("自定义", "", current_api or "openai-completions"))
     print(f"\n{provider_id} provider 设置:")
     for i, (name, url, api) in enumerate(presets, 1):
@@ -312,77 +319,49 @@ def choose_paths(data: dict, input_fn=input) -> dict[str, str]:
 
 
 def compact_agents(data: dict, models: dict[str, dict], choices: dict[str, str] | None = None) -> None:
-    """Make every supported agent refer only to the two retained providers."""
+    """Apply model choices without rewriting an agent's provider selection."""
     agents = data.setdefault("agents", {})
     choices = choices or {}
-    def keep_or_first(agent: dict, field: str, catalog: dict[str, dict], provider_id: str) -> str:
-        old = str(agent.get(field) or "")
-        preferred = PREFERRED.get(provider_id, "")
-        return preferred if preferred in catalog else old if old in catalog else next(iter(catalog))
-
-    gpt_model = choices.get("codex.defaultModel") or keep_or_first(agents.get("codex") or {}, "defaultModel", models["gpt"], "gpt")
     for name, agent in agents.items():
         if not isinstance(agent, dict):
             continue
+        provider = str(agent.get("defaultProvider") or agent.get("provider") or "")
+        catalog = models.get(provider) or {}
+        if not catalog:
+            continue
+
+        def apply_choice(field: str, choice_key: str) -> None:
+            value = choices.get(choice_key) or agent.get(field)
+            if value not in catalog:
+                preferred = PREFERRED.get(provider)
+                value = preferred if preferred in catalog else next(iter(catalog))
+            agent[field] = value
+
         if name == "codex":
-            agent["defaultProvider"] = "gpt"
-            agent["defaultModel"] = gpt_model
-            agent.pop("deepseekProfile", None)
-            gpt = data["providers"]["gpt"]
-            api = gpt.get("api") or "openai-responses"
-            wire_api = "responses" if api == "openai-responses" else "chat"
-            agent["providers"] = {"gpt": {"provider": "gpt", "baseURL": gpt.get("baseURL", ""), "wireApi": wire_api}}
+            apply_choice("defaultModel", "codex.defaultModel")
         elif name == "claude":
-            agent["provider"] = "opencode-go"
-            agent["defaultModel"] = choices.get("claude.defaultModel") or keep_or_first(agent, "defaultModel", models["opencode-go"], "opencode-go")
-            agent["flashModel"] = choices.get("claude.flashModel") or keep_or_first(agent, "flashModel", models["opencode-go"], "opencode-go")
-            agent["haikuModel"] = choices.get("claude.haikuModel") or agent["flashModel"]
-            agent["flashModel"] = agent["haikuModel"]
-            agent["opusModel"] = choices.get("claude.opusModel") or agent["defaultModel"]
-            agent["sonnetModel"] = choices.get("claude.sonnetModel") or agent["defaultModel"]
-            oc = data["providers"]["opencode-go"]
-            oc_base = str(oc.get("baseURL") or "").rstrip("/")
-            agent["anthropicBaseURL"] = oc.get("anthropicBaseURL") or (
-                oc_base[:-3].rstrip("/") if oc_base.endswith("/v1") else oc_base
-            )
-            agent.pop("baseURL", None)
-            agent["providers"] = ["opencode-go"]
+            for field in ("defaultModel", "flashModel", "haikuModel", "sonnetModel", "opusModel"):
+                apply_choice(field, f"claude.{field}")
         elif name == "pi":
-            agent["provider"] = "opencode-go"
-            agent["defaultModel"] = choices.get("pi.defaultModel") or keep_or_first(agent, "defaultModel", models["opencode-go"], "opencode-go")
-            agent.pop("baseURL", None)
-            agent.pop("api", None)
-            agent["providers"] = list(KEEP)
+            apply_choice("defaultModel", "pi.defaultModel")
         elif name == "dsh":
-            agent["defaultProvider"] = "opencode-go"
-            agent["defaultModel"] = choices.get("dsh.defaultModel") or keep_or_first(agent, "defaultModel", models["opencode-go"], "opencode-go")
-            agent["llmPiAiProviders"] = list(KEEP)
-            agent["llmDeepseekModels"] = []
-            agent["credentials"] = {"GPT_API_KEY": "gpt.apiKey", "OPENCODE_GO_API_KEY": "opencode-go.apiKey"}
-        elif name == "zcode":
-            old = agent.get("providers") or {}
-            agent["defaultProvider"] = "opencode-go"
-            agent["providers"] = {
-                pid: {
-                    "provider": pid,
-                    "name": data["providers"][pid].get("displayName") or pid,
-                    "kind": "openai-compatible",
-                    "baseURL": data["providers"][pid].get("baseURL", ""),
-                    "enabled": bool((old.get(pid) or {}).get("enabled", True)),
-                }
-                for pid in KEEP
-            }
+            apply_choice("defaultModel", "dsh.defaultModel")
 
 
 def proposed(data: dict, selected: dict[str, dict], keys: dict[str, str], choices: dict[str, str] | None = None, paths: dict[str, str] | None = None, provider_settings: dict[str, dict[str, str]] | None = None) -> dict:
     out = copy.deepcopy(data)
     providers = out.setdefault("providers", {})
-    out["providers"] = {pid: copy.deepcopy(providers.get(pid) or {}) for pid in KEEP}
-    for pid in KEEP:
-        p = out["providers"][pid]
+    if not isinstance(providers, dict):
+        providers = {}
+        out["providers"] = providers
+    for pid, models_for_provider in selected.items():
+        p = providers.setdefault(pid, {})
+        if not isinstance(p, dict):
+            p = {}
+            providers[pid] = p
         if keys.get(pid):
             p["apiKey"] = keys[pid]
-        p["models"] = selected[pid]
+        p["models"] = models_for_provider
         if provider_settings and pid in provider_settings:
             p.update(provider_settings[pid])
             if pid == "gpt":
@@ -402,17 +381,23 @@ def proposed(data: dict, selected: dict[str, dict], keys: dict[str, str], choice
 def choose_agent_models(data: dict, selected: dict[str, dict], input_fn=input) -> dict[str, str]:
     agents = data.get("agents") or {}
     out: dict[str, str] = {}
-    codex = agents.get("codex") or {}
-    out["codex.defaultModel"] = choose_one("Codex 默认 model", "gpt", selected["gpt"], str(codex.get("defaultModel") or ""), input_fn)
-    claude = agents.get("claude") or {}
-    out["claude.defaultModel"] = choose_one("Claude Code 默认 model", "opencode-go", selected["opencode-go"], str(claude.get("defaultModel") or ""), input_fn)
-    out["claude.haikuModel"] = choose_one("Claude Code Haiku model", "opencode-go", selected["opencode-go"], str(claude.get("haikuModel") or claude.get("flashModel") or ""), input_fn)
-    out["claude.sonnetModel"] = choose_one("Claude Code Sonnet model", "opencode-go", selected["opencode-go"], str(claude.get("sonnetModel") or claude.get("defaultModel") or ""), input_fn)
-    out["claude.opusModel"] = choose_one("Claude Code Opus model", "opencode-go", selected["opencode-go"], str(claude.get("opusModel") or claude.get("defaultModel") or ""), input_fn)
-    pi = agents.get("pi") or {}
-    out["pi.defaultModel"] = choose_one("Pi 默认 model", "opencode-go", selected["opencode-go"], str(pi.get("defaultModel") or ""), input_fn)
-    dsh = agents.get("dsh") or {}
-    out["dsh.defaultModel"] = choose_one("DSH 默认 model", "opencode-go", selected["opencode-go"], str(dsh.get("defaultModel") or ""), input_fn)
+
+    def choose_for(agent_name: str, field: str, label: str, fallback_field: str | None = None) -> None:
+        agent = agents.get(agent_name) or {}
+        provider = str(agent.get("defaultProvider") or agent.get("provider") or "")
+        catalog = selected.get(provider) or {}
+        if not provider or not catalog:
+            return
+        current = str(agent.get(field) or (agent.get(fallback_field) if fallback_field else "") or "")
+        out[f"{agent_name}.{field}"] = choose_one(label, provider, catalog, current, input_fn)
+
+    choose_for("codex", "defaultModel", "Codex 默认 model")
+    choose_for("claude", "defaultModel", "Claude Code 默认 model")
+    choose_for("claude", "haikuModel", "Claude Code Haiku model", "flashModel")
+    choose_for("claude", "sonnetModel", "Claude Code Sonnet model", "defaultModel")
+    choose_for("claude", "opusModel", "Claude Code Opus model", "defaultModel")
+    choose_for("pi", "defaultModel", "Pi 默认 model")
+    choose_for("dsh", "defaultModel", "DSH 默认 model")
     return out
 
 
@@ -429,7 +414,7 @@ def run_sync(dry_run: bool) -> int:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="只保留 gpt / opencode-go 的 Agent Vendors CLI 配置向导")
+    parser = argparse.ArgumentParser(description="配置 Agent Vendors provider 和 model")
     parser.add_argument("--yes", action="store_true", help="跳过最终确认")
     parser.add_argument("--dry-run", action="store_true", help="只显示同步预览，不写入")
     parser.add_argument("--no-sync", action="store_true", help="保存 YAML，但不执行同步")
@@ -437,10 +422,16 @@ def main() -> int:
 
     try:
         data = load_config()
+        pids = provider_ids(data)
         paths = choose_paths(data)
-        provider_settings = {pid: choose_provider_settings(data, pid) for pid in KEEP}
-        keys = {pid: ask_key(pid) for pid in KEEP}
-        selected = {pid: choose_models(pid, model_catalog(data, pid)) for pid in KEEP}
+        provider_settings = {pid: choose_provider_settings(data, pid) for pid in pids}
+        keys = {pid: ask_key(pid) for pid in pids}
+        selected = {}
+        for pid in pids:
+            catalog = model_catalog(data, pid)
+            selected[pid] = choose_models(pid, catalog) if catalog else (
+                copy.deepcopy(((data.get("providers") or {}).get(pid) or {}).get("models") or {})
+            )
         choices = choose_agent_models(data, selected)
         out = proposed(data, selected, keys, choices, paths, provider_settings)
     except KeyboardInterrupt:
@@ -449,8 +440,8 @@ def main() -> int:
     except (OSError, ValueError, yaml.YAMLError) as exc:
         print(f"配置失败: {exc}", file=sys.stderr)
         return 2
-    print("\n将保留 provider: gpt, opencode-go")
-    for pid in KEEP:
+    print("\n将更新 provider: " + ", ".join(pids))
+    for pid in pids:
         print(f"  {pid}: {len(selected[pid])} 个 model，API key {'更新' if keys[pid] else '保持原值'}")
         print(f"       baseURL={provider_settings[pid]['baseURL']} ({provider_settings[pid]['api']})")
     print("  agent defaults: " + ", ".join(f"{k}={v}" for k, v in choices.items()))

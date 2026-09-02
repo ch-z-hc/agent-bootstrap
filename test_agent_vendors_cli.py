@@ -5,15 +5,14 @@ import agent_vendors_cli as cli
 
 
 class AgentVendorsCliTests(unittest.TestCase):
-    def test_compact_agents_and_providers(self):
+    def test_proposed_preserves_provider_registry_and_agent_bindings(self):
         data = {"providers": {"gpt": {"baseURL": "http://gpt"}, "opencode-go": {"baseURL": "http://oc"}, "deepseek": {}}, "agents": {"codex": {"defaultProvider": "deepseek", "defaultModel": "gpt-x", "providers": {"deepseek": {}}}, "pi": {"provider": "deepseek", "defaultModel": "oc-x", "providers": ["deepseek"]}, "dsh": {"defaultProvider": "deepseek"}, "zcode": {"providers": {"deepseek": {}}}, "claude": {"provider": "deepseek", "defaultModel": "oc-x", "flashModel": "oc-x"}}}
         selected = {"gpt": {"gpt-x": {"name": "GPT X"}}, "opencode-go": {"oc-x": {"name": "OC X"}}}
         out = cli.proposed(data, selected, {"gpt": "new-gpt", "opencode-go": "new-oc"})
-        self.assertEqual(set(out["providers"]), set(cli.KEEP))
-        self.assertEqual(out["agents"]["codex"]["defaultProvider"], "gpt")
-        self.assertEqual(out["agents"]["pi"]["providers"], list(cli.KEEP))
-        self.assertEqual(out["agents"]["pi"]["defaultModel"], "oc-x")
-        self.assertEqual(set(out["agents"]["zcode"]["providers"]), set(cli.KEEP))
+        self.assertEqual(set(out["providers"]), {"gpt", "opencode-go", "deepseek"})
+        self.assertEqual(out["agents"]["codex"]["defaultProvider"], "deepseek")
+        self.assertEqual(out["agents"]["pi"]["providers"], ["deepseek"])
+        self.assertEqual(out["agents"]["zcode"]["providers"], {"deepseek": {}})
         self.assertEqual(out["providers"]["gpt"]["apiKey"], "new-gpt")
 
     def test_choose_models_numbers(self):
@@ -44,7 +43,7 @@ class AgentVendorsCliTests(unittest.TestCase):
         self.assertEqual(out["providers"]["gpt"]["wireApi"], "chat")
 
     def test_compact_agents_records_anthropic_endpoint(self):
-        data = {"providers": {"gpt": {}, "opencode-go": {"baseURL": "https://oc/zen/go/v1"}}, "agents": {"claude": {}}}
+        data = {"providers": {"gpt": {}, "opencode-go": {"baseURL": "https://oc/zen/go/v1"}}, "agents": {"claude": {"provider": "opencode-go"}}}
         out = cli.proposed(
             data,
             {"gpt": {"gpt-x": {}}, "opencode-go": {"oc-x": {}}},
@@ -52,7 +51,7 @@ class AgentVendorsCliTests(unittest.TestCase):
             choices={"claude.defaultModel": "oc-x", "claude.flashModel": "oc-x", "claude.haikuModel": "oc-x", "claude.sonnetModel": "oc-x", "claude.opusModel": "oc-x"},
         )
         self.assertEqual(out["providers"]["opencode-go"]["anthropicBaseURL"], "https://oc/zen/go")
-        self.assertEqual(out["agents"]["claude"]["anthropicBaseURL"], "https://oc/zen/go")
+        self.assertEqual(out["agents"]["claude"]["provider"], "opencode-go")
 
     def test_gpt_defaults_to_custom_url(self):
         answers = iter(["", "https://my-gateway.example/v1", ""])
