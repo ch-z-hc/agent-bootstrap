@@ -758,7 +758,9 @@ def sync_codex(vendors: dict, dry_run: bool, no_backup: bool, changes: list) -> 
         # Codex supports one active provider in this setup. Only synchronize
         # the configured default provider and discard any stale sections.
         pname = a.get("defaultProvider") or "gpt"
-        entry = (a.get("providers") or {}).get(pname) or {}
+        agent_providers = a.get("providers") or {}
+        entry = agent_providers.get(pname) if isinstance(agent_providers, dict) else {}
+        entry = entry or {}
         for pname, entry in ((pname, entry),):
             gp = providers.get(pname) or {}
             _, gkey = resolve_provider(providers, pname)
@@ -787,7 +789,11 @@ def sync_codex(vendors: dict, dry_run: bool, no_backup: bool, changes: list) -> 
 
     pname = a.get("defaultProvider") or "gpt"
     provider_entry = (a.get("providers") or {}).get(pname) or {}
+    # Keep model definitions in the top-level provider as the source of truth.
+    # Agent-level models remain supported as an optional restriction/override.
     allowed_models = set((provider_entry.get("models") or {}).keys())
+    if not allowed_models:
+        allowed_models = set(((providers.get(pname) or {}).get("models") or {}).keys())
     if allowed_models and TARGETS["codex_models"].exists():
         def mut_catalog(data):
             models = data.get("models")
