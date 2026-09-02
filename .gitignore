@@ -6,7 +6,6 @@ agent-vendors.yaml
 agent-vendors.yaml.*
 *.credentials.yaml
 *.credentials.yaml.*
-backups/
 *.tmp
 .pytest_cache/
 .env
