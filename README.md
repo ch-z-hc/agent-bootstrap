@@ -35,7 +35,7 @@ python "$HOME\.agents\agent_vendors_cli.py"
 powershell -ExecutionPolicy Bypass -File "$HOME\.agents\start-agent-vendors-cli.ps1"
 ```
 
-向导会先让你确认 Claude Code、Codex、Pi、DSH 的配置文件路径（自动探测到的现有文件会作为默认值），再处理 `gpt` 和 `opencode-go` 的可用 model，最后逐项显示 Codex、Claude Code（Haiku / Sonnet / Opus / 默认）、Pi 和 DSH 的 model 选择。输入 API key 时直接回车可保留已有值；模型输入编号（例如 `1,3,5`）或直接回车保留当前值。确认后自动备份 YAML、移除其他 provider，并同步所有 agent。路径会写入 YAML 的 `paths` 节点，Windows / Linux 可以分别保存自己的路径。
+向导会先让你确认 Claude Code、Codex、Pi、DSH 的配置文件路径（自动探测到的现有文件会作为默认值），再分别为 `gpt` 和 `opencode-go` 选择常用 Base URL，或输入自定义 Base URL 与 API 类型（`openai-completions` / `openai-responses`）。随后显示完整 model 目录（包括 `muse-spark-1.2-contributor`、Kimi、GLM、MiniMax、Qwen 等），可按编号勾选保留。最后逐项显示 Codex、Claude Code（Haiku / Sonnet / Opus / 默认）、Pi 和 DSH 的 model 选择。输入 API key 时直接回车可保留已有值。确认后移除其他 provider，并同步所有 agent。路径会写入 YAML 的 `paths` 节点，Windows / Linux 可以分别保存自己的路径。
 
 先编辑 `~/.agents/agent-vendors.yaml`，然后预览变更：
 
@@ -43,7 +43,7 @@ powershell -ExecutionPolicy Bypass -File "$HOME\.agents\start-agent-vendors-cli.
 python "$HOME\.agents\agent_vendors.py" sync --dry-run
 ```
 
-确认后应用（默认会在 `~/.agents/backups/agent-vendors` 创建备份）：
+确认后应用：
 
 ```powershell
 python "$HOME\.agents\agent_vendors.py" sync
@@ -88,9 +88,9 @@ python "$HOME\.agents\agent_vendors.py" init
 
 ## 安全提示
 
-- 不要提交真实 API key、JWT、内网地址、备份和运行日志。
+- 不要提交真实 API key、JWT、内网地址和运行日志。
 - 应用同步前使用 `--dry-run` 检查差异。
-- 同步会修改本机 agent 配置；备份只保存在本机。
+- 同步会直接修改本机 agent 配置；需要回滚时请使用 Git 或系统文件历史。
 
 ## 许可证
 

@@ -62,7 +62,7 @@ def main() -> None:
         log("trigger: agent-vendors.yaml changed")
         try:
             proc = subprocess.run(
-                [sys.executable, str(PY_SCRIPT), "sync", "--no-backup"],
+                [sys.executable, str(PY_SCRIPT), "sync"],
                 capture_output=True, text=True, encoding="utf-8", errors="replace",
                 timeout=120,
             )

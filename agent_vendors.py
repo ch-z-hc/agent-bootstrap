@@ -17,10 +17,8 @@ import copy
 import json
 import os
 import re
-import shutil
 import stat
 import sys
-import time
 from pathlib import Path
 
 import yaml
@@ -34,7 +32,6 @@ HOME = Path(os.path.expanduser("~"))
 AGENTS_DIR = HOME / ".agents"
 DSH = HOME / ".dsh"
 VENDORS_FILE = AGENTS_DIR / "agent-vendors.yaml"
-BACKUP_ROOT = AGENTS_DIR / "backups" / "agent-vendors"
 HOME_POSIX = str(HOME).replace("\\", "/")
 
 # Target file locations
@@ -107,20 +104,6 @@ def save_yaml(path: Path, data) -> None:
     if path.exists():
         os.chmod(tmp, stat.S_IMODE(path.stat().st_mode))
     tmp.replace(path)
-
-
-def backup(path: Path) -> Path | None:
-    if not path.exists():
-        return None
-    BACKUP_ROOT.mkdir(parents=True, exist_ok=True)
-    stamp = time.strftime("%Y%m%d-%H%M%S")
-    dest = BACKUP_ROOT / f"{path.name}.{stamp}"
-    counter = 1
-    while dest.exists():
-        dest = BACKUP_ROOT / f"{path.name}.{stamp}.{counter}"
-        counter += 1
-    shutil.copy2(path, dest)
-    return dest
 
 
 # --------------------------------------------------------------------------
@@ -517,7 +500,7 @@ def write_text(path: Path, text: str) -> None:
     tmp.replace(path)
 
 
-def update_json(path: Path, mutator, dry_run: bool, name: str, no_backup: bool, changes: list) -> None:
+def update_json(path: Path, mutator, dry_run: bool, name: str, changes: list) -> None:
     if not path.exists():
         return
     old = path.read_text(encoding="utf-8")
@@ -530,12 +513,10 @@ def update_json(path: Path, mutator, dry_run: bool, name: str, no_backup: bool, 
     for line in diff_texts(old, new):
         changes.append(f"    {line}")
     if not dry_run:
-        if not no_backup:
-            backup(path)
         write_text(path, new)
 
 
-def update_yaml(path: Path, mutator, dry_run: bool, name: str, no_backup: bool, changes: list) -> None:
+def update_yaml(path: Path, mutator, dry_run: bool, name: str, changes: list) -> None:
     if not path.exists():
         return
     old = path.read_text(encoding="utf-8")
@@ -550,12 +531,10 @@ def update_yaml(path: Path, mutator, dry_run: bool, name: str, no_backup: bool, 
     for line in diff_texts(old, new):
         changes.append(f"    {line}")
     if not dry_run:
-        if not no_backup:
-            backup(path)
         write_text(path, new)
 
 
-def update_toml(path: Path, mutator, dry_run: bool, name: str, no_backup: bool, changes: list) -> None:
+def update_toml(path: Path, mutator, dry_run: bool, name: str, changes: list) -> None:
     if not path.exists():
         return
     old = path.read_text(encoding="utf-8")
@@ -568,8 +547,6 @@ def update_toml(path: Path, mutator, dry_run: bool, name: str, no_backup: bool, 
     for line in diff_texts(old, new):
         changes.append(f"    {line}")
     if not dry_run:
-        if not no_backup:
-            backup(path)
         write_text(path, new)
 
 
@@ -703,7 +680,7 @@ def prune_toml_provider_sections(
     return out, changed
 
 
-def sync_claude(vendors: dict, dry_run: bool, no_backup: bool, changes: list) -> None:
+def sync_claude(vendors: dict, dry_run: bool, changes: list) -> None:
     a = vendors["agents"].get("claude") or {}
     if not a.get("enabled", True):
         return
@@ -753,10 +730,10 @@ def sync_claude(vendors: dict, dry_run: bool, no_backup: bool, changes: list) ->
         env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] = str(max_ctx)
         data["model"] = fmt(default)
 
-    update_json(settings_path, mut, dry_run, "claude", no_backup, changes)
+    update_json(settings_path, mut, dry_run, "claude", changes)
 
 
-def sync_codex(vendors: dict, dry_run: bool, no_backup: bool, changes: list) -> None:
+def sync_codex(vendors: dict, dry_run: bool, changes: list) -> None:
     a = vendors["agents"].get("codex") or {}
     if not a.get("enabled", True):
         return
@@ -809,7 +786,7 @@ def sync_codex(vendors: dict, dry_run: bool, no_backup: bool, changes: list) -> 
         lines, pruned = prune_toml_provider_sections(lines, allowed)
         return lines, changed or pruned
 
-    update_toml(config_path, mut, dry_run, "codex", no_backup, changes)
+    update_toml(config_path, mut, dry_run, "codex", changes)
 
     pname = a.get("defaultProvider") or "gpt"
     provider_entry = (a.get("providers") or {}).get(pname) or {}
@@ -836,7 +813,6 @@ def sync_codex(vendors: dict, dry_run: bool, no_backup: bool, changes: list) -> 
             mut_catalog,
             dry_run,
             "codex model catalog",
-            no_backup,
             changes,
         )
 
@@ -854,10 +830,10 @@ def sync_codex(vendors: dict, dry_run: bool, no_backup: bool, changes: list) -> 
             if prof.get("modelCatalogJson"):
                 updates[None]["model_catalog_json"] = prof["modelCatalogJson"]
             return set_toml_values(lines, updates)
-        update_toml(deepseek_path, mut2, dry_run, "codex deepseek profile", no_backup, changes)
+        update_toml(deepseek_path, mut2, dry_run, "codex deepseek profile", changes)
 
 
-def sync_pi(vendors: dict, dry_run: bool, no_backup: bool, changes: list) -> None:
+def sync_pi(vendors: dict, dry_run: bool, changes: list) -> None:
     a = vendors["agents"].get("pi") or {}
     if not a.get("enabled", True):
         return
@@ -897,7 +873,7 @@ def sync_pi(vendors: dict, dry_run: bool, no_backup: bool, changes: list) -> Non
         if a.get("defaultThinkingLevel"):
             data["defaultThinkingLevel"] = a["defaultThinkingLevel"]
 
-    update_json(settings_path, mut_settings, dry_run, "pi settings", no_backup, changes)
+    update_json(settings_path, mut_settings, dry_run, "pi settings", changes)
 
     def pi_model_entry(mid, m, name, api, base):
         return {
@@ -932,10 +908,10 @@ def sync_pi(vendors: dict, dry_run: bool, no_backup: bool, changes: list) -> Non
             elif not pd.get("models"):
                 pd["models"] = []
 
-    update_json(models_path, mut_models, dry_run, "pi models", no_backup, changes)
+    update_json(models_path, mut_models, dry_run, "pi models", changes)
 
 
-def sync_zcode(vendors: dict, dry_run: bool, no_backup: bool, changes: list) -> None:
+def sync_zcode(vendors: dict, dry_run: bool, changes: list) -> None:
     a = vendors["agents"].get("zcode") or {}
     if not a.get("enabled", True):
         return
@@ -1001,10 +977,10 @@ def sync_zcode(vendors: dict, dry_run: bool, no_backup: bool, changes: list) -> 
                         }
                 existing["models"] = new_models
 
-    update_json(config_path, mut, dry_run, "zcode", no_backup, changes)
+    update_json(config_path, mut, dry_run, "zcode", changes)
 
 
-def sync_dsh(vendors: dict, dry_run: bool, no_backup: bool, changes: list) -> None:
+def sync_dsh(vendors: dict, dry_run: bool, changes: list) -> None:
     a = vendors["agents"].get("dsh") or {}
     if not a.get("enabled", True):
         return
@@ -1051,7 +1027,7 @@ def sync_dsh(vendors: dict, dry_run: bool, no_backup: bool, changes: list) -> No
             deep_mods.append({"id": mid, "name": m.get("name") or mid})
         data.setdefault("llm-deepseek", {})["models"] = deep_mods
 
-    update_yaml(settings_path, mut_settings, dry_run, "dsh settings", no_backup, changes)
+    update_yaml(settings_path, mut_settings, dry_run, "dsh settings", changes)
 
     def mut_creds(data):
         refs = data.setdefault("refs", {})
@@ -1064,7 +1040,7 @@ def sync_dsh(vendors: dict, dry_run: bool, no_backup: bool, changes: list) -> No
                 if key is not None:
                     refs[env_name] = key
 
-    update_yaml(credentials_path, mut_creds, dry_run, "dsh credentials", no_backup, changes)
+    update_yaml(credentials_path, mut_creds, dry_run, "dsh credentials", changes)
 
 
 def cmd_init(args):
@@ -1077,11 +1053,11 @@ def cmd_sync(args):
         return
     vendors = load_yaml(VENDORS_FILE)
     changes: list[str] = []
-    sync_claude(vendors, args.dry_run, args.no_backup, changes)
-    sync_codex(vendors, args.dry_run, args.no_backup, changes)
-    sync_pi(vendors, args.dry_run, args.no_backup, changes)
-    sync_zcode(vendors, args.dry_run, args.no_backup, changes)
-    sync_dsh(vendors, args.dry_run, args.no_backup, changes)
+    sync_claude(vendors, args.dry_run, changes)
+    sync_codex(vendors, args.dry_run, changes)
+    sync_pi(vendors, args.dry_run, changes)
+    sync_zcode(vendors, args.dry_run, changes)
+    sync_dsh(vendors, args.dry_run, changes)
 
     if not changes:
         print("[sync] no changes")
@@ -1101,7 +1077,6 @@ def main():
     init_p.add_argument("--force", action="store_true", help="overwrite existing agent-vendors.yaml")
     sync_p = sub.add_parser("sync", help="sync agent configs from agent-vendors.yaml")
     sync_p.add_argument("--dry-run", action="store_true", help="show what would change without writing")
-    sync_p.add_argument("--no-backup", action="store_true", help="do not create backups")
     args = parser.parse_args()
     if args.command == "init":
         cmd_init(args)

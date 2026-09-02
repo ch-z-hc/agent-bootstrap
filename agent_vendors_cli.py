@@ -10,10 +10,8 @@ import argparse
 import copy
 import getpass
 import os
-import shutil
 import subprocess
 import sys
-import time
 from pathlib import Path
 
 import yaml
@@ -21,7 +19,6 @@ import yaml
 HOME = Path.home()
 YAML_FILE = Path(os.environ.get("AGENT_VENDORS_FILE", HOME / ".agents" / "agent-vendors.yaml"))
 SYNC_SCRIPT = Path(__file__).resolve().with_name("agent_vendors.py")
-BACKUP_DIR = HOME / ".agents" / "backups" / "agent-vendors"
 
 
 def load_config() -> dict:
@@ -40,18 +37,53 @@ def save_config(data: dict) -> None:
     tmp.replace(YAML_FILE)
 
 
-def backup_config() -> Path:
-    BACKUP_DIR.mkdir(parents=True, exist_ok=True)
-    stamp = time.strftime("%Y%m%d-%H%M%S")
-    dest = BACKUP_DIR / f"agent-vendors.yaml.{stamp}"
-    if dest.exists():
-        dest = BACKUP_DIR / f"agent-vendors.yaml.{stamp}.{os.getpid()}"
-    shutil.copy2(YAML_FILE, dest)
-    return dest
-
-
 KEEP = ("gpt", "opencode-go")
 PREFERRED = {"gpt": "gpt-5.6-sol", "opencode-go": "deepseek-v4-pro"}
+MODEL_EXTRAS = {
+    "gpt": {
+        "gpt-5.5": {"name": "GPT 5.5"},
+        "gpt-5.6-sol": {"name": "GPT 5.6 Sol"},
+        "gpt-4.1": {"name": "GPT 4.1"},
+        "gpt-4o": {"name": "GPT 4o"},
+        "o3": {"name": "o3"},
+        "o4-mini": {"name": "o4-mini"},
+    },
+    "opencode-go": {
+        # Models exposed by OpenCode Go and common compatible gateways.  The
+        # catalog is intentionally static as a fallback, so a fresh machine
+        # can choose a model before its local model cache has been created.
+        "kimi-k3": {"name": "Kimi K3"},
+        "kimi-k2.7-code": {"name": "Kimi K2.7 Code"},
+        "kimi-k2.6": {"name": "Kimi K2.6"},
+        "kimi-k2.5": {"name": "Kimi K2.5"},
+        "glm-5.3": {"name": "GLM 5.3"},
+        "glm-5.2": {"name": "GLM 5.2"},
+        "glm-5.1": {"name": "GLM 5.1"},
+        "glm-5": {"name": "GLM 5"},
+        "mimo-v2-pro": {"name": "MiMo V2 Pro"},
+        "mimo-v2-omni": {"name": "MiMo V2 Omni"},
+        "mimo-v2.5-pro": {"name": "MiMo V2.5 Pro"},
+        "mimo-v2.5": {"name": "MiMo V2.5"},
+        "hy3-preview": {"name": "Hy3 Preview"},
+        "hy3": {"name": "Hy3"},
+        "muse-spark-1.2-contributor": {"name": "Muse Spark 1.2 Contributor"},
+        "deepseek-v4-pro": {"name": "DeepSeek V4 Pro"},
+        "deepseek-v4-flash": {"name": "DeepSeek V4 Flash"},
+        "deepseek-v4-flash-vision-exp": {"name": "DeepSeek V4 Flash Vision Exp"},
+        "glm-5.3-flash": {"name": "GLM 5.3 Flash"},
+        "gpt-5.6-luna": {"name": "GPT 5.6 Luna"},
+        "grok-4.5": {"name": "Grok 4.5"},
+        "grok-4.6": {"name": "Grok 4.6"},
+        "longcat-2.0": {"name": "LongCat 2.0"},
+        "qwen3.6-plus": {"name": "Qwen 3.6 Plus"},
+        "qwen3.7-max": {"name": "Qwen 3.7 Max"},
+        "qwen3.7-plus": {"name": "Qwen 3.7 Plus"},
+        "qwen3.8-max": {"name": "Qwen 3.8 Max"},
+        "minimax-m3": {"name": "MiniMax M3"},
+        "minimax-m2.7": {"name": "MiniMax M2.7"},
+        "minimax-m2.5": {"name": "MiniMax M2.5"},
+    },
+}
 
 PATH_LABELS = {
     "claude_settings": "Claude Code settings.json",
@@ -66,23 +98,83 @@ PLATFORM = "windows" if os.name == "nt" else ("macos" if sys.platform == "darwin
 def model_catalog(data: dict, provider_id: str) -> dict:
     p = (data.get("providers") or {}).get(provider_id) or {}
     models = p.get("models") or {}
-    if isinstance(models, dict) and models:
-        return copy.deepcopy(models)
+    if not isinstance(models, dict):
+        models = {}
+    merged = copy.deepcopy(models)
+    # Codex keeps an additional local catalog.  Merge it even when the YAML
+    # already contains models, otherwise newly installed models would be
+    # hidden by the first (partial) source.
     if provider_id == "gpt":
-        # GPT historically had no top-level catalog; use Codex's local catalog
-        # when available, then fall back to its current default.
         codex_catalog = Path.home() / ".codex" / "models.json"
         if codex_catalog.exists():
             try:
-                rows = yaml.safe_load(codex_catalog.read_text(encoding="utf-8")).get("models", [])
-                slugs = [str(row.get("slug")) for row in rows if isinstance(row, dict) and row.get("slug")]
-                if slugs:
-                    return {slug: {"name": slug} for slug in slugs}
-            except (OSError, AttributeError, yaml.YAMLError):
+                payload = yaml.safe_load(codex_catalog.read_text(encoding="utf-8")) or {}
+                rows = payload.get("models", []) if isinstance(payload, dict) else []
+                for row in rows:
+                    if isinstance(row, dict) and row.get("slug"):
+                        slug = str(row["slug"])
+                        merged.setdefault(slug, {"name": slug})
+            except (OSError, AttributeError, TypeError, yaml.YAMLError):
                 pass
-        current = ((data.get("agents") or {}).get("codex") or {}).get("defaultModel")
-        return {str(current or "gpt-5.6-sol"): {"name": str(current or "gpt-5.6-sol")}}
+    for mid, meta in MODEL_EXTRAS.get(provider_id, {}).items():
+        merged.setdefault(mid, copy.deepcopy(meta))
+    if merged:
+        return merged
+    current = ((data.get("agents") or {}).get("codex") or {}).get("defaultModel")
+    if provider_id == "gpt":
+        value = str(current or PREFERRED["gpt"])
+        return {value: {"name": value}}
     return {}
+
+
+def choose_index(prompt: str, count: int, input_fn=input, default: int = 1) -> int:
+    """Read a menu index with ccswitch-style retry instead of a traceback."""
+    while True:
+        answer = input_fn(prompt).strip().lower()
+        if not answer:
+            return default
+        if answer in {"q", "quit", "exit"}:
+            raise KeyboardInterrupt
+        try:
+            index = int(answer)
+        except ValueError:
+            print("请输入菜单编号，或输入 q 取消。")
+            continue
+        if 1 <= index <= count:
+            return index
+        print(f"请输入 1 到 {count} 之间的编号。")
+
+
+def choose_provider_settings(data: dict, provider_id: str, input_fn=input) -> dict[str, str]:
+    current = ((data.get("providers") or {}).get(provider_id) or {})
+    current_url = str(current.get("baseURL") or "")
+    current_api = str(current.get("api") or current.get("defaultWireApi") or "")
+    if not current_api:
+        wire = str(current.get("wireApi") or "")
+        current_api = "openai-responses" if wire == "responses" else "openai-completions"
+    presets = {
+        "gpt": [("当前配置", current_url, current_api), ("OpenAI 官方", "https://api.openai.com/v1", "openai-completions"), ("自定义", "", "openai-completions")],
+        "opencode-go": [("OpenCode Go 官方", "https://opencode.ai/zen/go/v1", "openai-completions"), ("当前配置", current_url, current_api), ("自定义", "", "openai-completions")],
+    }
+    print(f"\n{provider_id} provider 设置:")
+    for i, (name, url, api) in enumerate(presets[provider_id], 1):
+        suffix = f" — {url}" if url else ""
+        print(f"  {i}. {name}{suffix}")
+    index = choose_index("选择地址（回车=当前配置，q=取消）: ", len(presets[provider_id]), input_fn)
+    name, url, api = presets[provider_id][index - 1]
+    if name == "自定义" or not url:
+        url = input_fn("Base URL: ").strip()
+        if not url:
+            raise ValueError("自定义 Base URL 不能为空")
+        while True:
+            entered = input_fn(f"API 类型（openai-completions / openai-responses）[{api}]: ").strip()
+            if not entered:
+                break
+            if entered in {"openai-completions", "openai-responses"}:
+                api = entered
+                break
+            print("API 类型只能是 openai-completions 或 openai-responses。")
+    return {"baseURL": url, "api": api}
 
 
 def choose_models(provider_id: str, catalog: dict, input_fn=input) -> dict:
@@ -93,20 +185,29 @@ def choose_models(provider_id: str, catalog: dict, input_fn=input) -> dict:
     for i, mid in enumerate(ids, 1):
         label = (catalog[mid] or {}).get("name") or mid
         print(f"  {i:>2}. [x] {label} ({mid})")
-    answer = input_fn("保留哪些模型？回车=全部，输入编号如 1,3，输入 all=全部，none=不保留: ").strip().lower()
-    if not answer or answer == "all":
-        selected = ids
-    elif answer == "none":
-        selected = []
-    else:
-        try:
-            indexes = [int(x.strip()) for x in answer.split(",") if x.strip()]
-            selected = [ids[i - 1] for i in indexes if 1 <= i <= len(ids)]
-        except ValueError as exc:
-            raise ValueError("模型编号格式应为逗号分隔的数字，例如 1,3") from exc
-    if not selected:
-        raise ValueError(f"{provider_id} 至少要保留一个 model")
-    return {mid: catalog[mid] for mid in selected}
+    while True:
+        answer = input_fn("保留哪些模型？回车/all=全部，输入编号如 1,3，none=不保留，q=取消: ").strip().lower()
+        if answer in {"q", "quit", "exit"}:
+            raise KeyboardInterrupt
+        if not answer or answer == "all":
+            selected = ids
+        elif answer == "none":
+            print(f"{provider_id} 至少要保留一个 model。")
+            continue
+        else:
+            try:
+                indexes = [int(x.strip()) for x in answer.split(",") if x.strip()]
+            except ValueError:
+                print("模型编号格式应为逗号分隔的数字，例如 1,3。")
+                continue
+            if any(i < 1 or i > len(ids) for i in indexes):
+                print(f"模型编号必须在 1 到 {len(ids)} 之间。")
+                continue
+            selected = [ids[i - 1] for i in indexes]
+            if not selected:
+                print(f"{provider_id} 至少要保留一个 model。")
+                continue
+        return {mid: catalog[mid] for mid in selected}
 
 
 def choose_one(label: str, provider_id: str, catalog: dict, current: str = "", input_fn=input) -> str:
@@ -118,19 +219,10 @@ def choose_one(label: str, provider_id: str, catalog: dict, current: str = "", i
         marker = "*" if mid == current else " "
         name = (catalog[mid] or {}).get("name") or mid
         print(f"  {i:>2}. [{marker}] {name} ({mid})")
-    answer = input_fn("选择一个 model 编号，回车保留当前/推荐值: ").strip()
-    if not answer:
-        if current in catalog:
-            return current
-        preferred = PREFERRED.get(provider_id)
-        return preferred if preferred in catalog else ids[0]
-    try:
-        index = int(answer)
-    except ValueError as exc:
-        raise ValueError("model 编号必须是数字") from exc
-    if not 1 <= index <= len(ids):
-        raise ValueError("model 编号超出范围")
-    return ids[index - 1]
+    default = ids.index(current) + 1 if current in catalog else (
+        ids.index(PREFERRED[provider_id]) + 1 if PREFERRED.get(provider_id) in catalog else 1
+    )
+    return ids[choose_index("选择一个 model 编号，回车保留当前/推荐值，q=取消: ", len(ids), input_fn, default) - 1]
 
 
 def ask_key(provider_id: str) -> str:
@@ -216,7 +308,10 @@ def compact_agents(data: dict, models: dict[str, dict], choices: dict[str, str] 
             agent["defaultProvider"] = "gpt"
             agent["defaultModel"] = gpt_model
             agent.pop("deepseekProfile", None)
-            agent["providers"] = {"gpt": {"provider": "gpt", "baseURL": data["providers"]["gpt"].get("baseURL", ""), "wireApi": "responses"}}
+            gpt = data["providers"]["gpt"]
+            api = gpt.get("api") or "openai-responses"
+            wire_api = "responses" if api == "openai-responses" else "chat"
+            agent["providers"] = {"gpt": {"provider": "gpt", "baseURL": gpt.get("baseURL", ""), "wireApi": wire_api}}
         elif name == "claude":
             agent["provider"] = "opencode-go"
             agent["defaultModel"] = choices.get("claude.defaultModel") or keep_or_first(agent, "defaultModel", models["opencode-go"], "opencode-go")
@@ -253,7 +348,7 @@ def compact_agents(data: dict, models: dict[str, dict], choices: dict[str, str] 
             }
 
 
-def proposed(data: dict, selected: dict[str, dict], keys: dict[str, str], choices: dict[str, str] | None = None, paths: dict[str, str] | None = None) -> dict:
+def proposed(data: dict, selected: dict[str, dict], keys: dict[str, str], choices: dict[str, str] | None = None, paths: dict[str, str] | None = None, provider_settings: dict[str, dict[str, str]] | None = None) -> dict:
     out = copy.deepcopy(data)
     providers = out.setdefault("providers", {})
     out["providers"] = {pid: copy.deepcopy(providers.get(pid) or {}) for pid in KEEP}
@@ -262,6 +357,8 @@ def proposed(data: dict, selected: dict[str, dict], keys: dict[str, str], choice
         if keys.get(pid):
             p["apiKey"] = keys[pid]
         p["models"] = selected[pid]
+        if provider_settings and pid in provider_settings:
+            p.update(provider_settings[pid])
     if paths:
         out["paths"] = paths
     compact_agents(out, selected, choices)
@@ -304,15 +401,24 @@ def main() -> int:
     parser.add_argument("--no-sync", action="store_true", help="保存 YAML，但不执行同步")
     args = parser.parse_args()
 
-    data = load_config()
-    paths = choose_paths(data)
-    keys = {pid: ask_key(pid) for pid in KEEP}
-    selected = {pid: choose_models(pid, model_catalog(data, pid)) for pid in KEEP}
-    choices = choose_agent_models(data, selected)
-    out = proposed(data, selected, keys, choices, paths)
+    try:
+        data = load_config()
+        paths = choose_paths(data)
+        provider_settings = {pid: choose_provider_settings(data, pid) for pid in KEEP}
+        keys = {pid: ask_key(pid) for pid in KEEP}
+        selected = {pid: choose_models(pid, model_catalog(data, pid)) for pid in KEEP}
+        choices = choose_agent_models(data, selected)
+        out = proposed(data, selected, keys, choices, paths, provider_settings)
+    except KeyboardInterrupt:
+        print("\n已取消")
+        return 130
+    except (OSError, ValueError, yaml.YAMLError) as exc:
+        print(f"配置失败: {exc}", file=sys.stderr)
+        return 2
     print("\n将保留 provider: gpt, opencode-go")
     for pid in KEEP:
         print(f"  {pid}: {len(selected[pid])} 个 model，API key {'更新' if keys[pid] else '保持原值'}")
+        print(f"       baseURL={provider_settings[pid]['baseURL']} ({provider_settings[pid]['api']})")
     print("  agent defaults: " + ", ".join(f"{k}={v}" for k, v in choices.items()))
     path_summary = paths.get(PLATFORM, {})
     print("  config paths: " + ", ".join(f"{k}={v}" for k, v in path_summary.items() if k in PATH_LABELS))
@@ -322,9 +428,8 @@ def main() -> int:
     if args.dry_run:
         print("\n[dry-run] 不写入 YAML，也不会触发同步。")
         return 0
-    backup = backup_config()
     save_config(out)
-    print(f"已保存，备份: {backup}")
+    print(f"已保存: {YAML_FILE}")
     if not args.no_sync:
         return run_sync(False)
     return 0
