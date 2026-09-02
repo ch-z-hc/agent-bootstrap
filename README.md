@@ -37,7 +37,7 @@ python "$HOME\.agents\agent_vendors_cli.py"
 powershell -ExecutionPolicy Bypass -File "$HOME\.agents\start-agent-vendors-cli.ps1"
 ```
 
-向导会先让你确认 Claude Code、Codex、Pi、DSH 的配置文件路径（自动探测到的现有文件会作为默认值），再分别为 `gpt` 和 `opencode-go` 选择常用 Base URL，或输入自定义 Base URL 与 API 类型（`openai-completions` / `openai-responses`）。随后显示完整 model 目录（包括 `muse-spark-1.2-contributor`、Kimi、GLM、MiniMax、Qwen 等），可按编号勾选保留。最后逐项显示 Codex、Claude Code（Haiku / Sonnet / Opus / 默认）、Pi 和 DSH 的 model 选择。输入 API key 时直接回车可保留已有值。确认后移除其他 provider，并同步所有 agent。路径会写入 YAML 的 `paths` 节点，Windows / Linux 可以分别保存自己的路径。
+向导会先让你确认 Claude Code、Codex、Pi、DSH 的配置文件路径（自动探测到的现有文件会作为默认值），再为 `gpt` 选择常用厂商的 Base URL，或输入自定义 Base URL；`opencode-go` 保留官方地址和自定义入口。两者都支持选择 API 类型（`openai-completions` / `openai-responses`）。`gpt` 默认从自定义入口开始，适合代理或自建网关；预设只保留 OpenAI、DeepSeek、OpenRouter 和 SiliconFlow 等常用地址。随后显示完整 model 目录（包括 `muse-spark-1.2-contributor`、Kimi、GLM、MiniMax、Qwen 等），可按编号勾选保留。最后逐项显示 Codex、Claude Code（Haiku / Sonnet / Opus / 默认）、Pi 和 DSH 的 model 选择。输入 API key 时直接回车可保留已有值。确认后移除其他 provider，并同步所有 agent。路径会写入 YAML 的 `paths` 节点，Windows / Linux 可以分别保存自己的路径。
 
 常用参数：
 
@@ -84,7 +84,7 @@ watcher 使用 localhost 端口 `47653` 保证只运行一个实例，并将运�
 
 ## 配置格式
 
-从 [`agent-vendors.example.yaml`](agent-vendors.example.yaml) 开始。`providers` 定义 provider 和 model，`agents` 定义每个 agent 的默认 provider/model 以及目标特有选项。API key 可以通过 `apiKeyEnv` 从环境变量读取，也可以放在本机未提交的 YAML 中；示例中的 key 均为占位符。
+从 [`agent-vendors.example.yaml`](agent-vendors.example.yaml) 开始。`providers` 定义 provider 和 model，`agents` 只负责选择 provider/model 以及目标特有选项。API key 可以通过 `apiKeyEnv` 从环境变量读取，也可以放在本机未提交的 YAML 中；示例中的 key 均为占位符。`baseURL` 是 OpenAI 兼容接口地址；需要 Claude Code 时可在同一 provider 下配置 `anthropicBaseURL`（也支持 `endpoints.anthropic-messages`），这样同一份凭据和 model 不会因为协议不同而串地址。OpenCode Go 未配置该字段时会自动将 `/v1` 去掉作为 Anthropic 地址。
 
 如果已有各 agent 配置，也可以生成集中配置：
 

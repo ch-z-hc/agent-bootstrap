@@ -85,6 +85,16 @@ MODEL_EXTRAS = {
     },
 }
 
+# A short, provider-neutral list.  ``gpt`` is commonly a private gateway in
+# this project, so it deliberately starts with the custom entry below rather
+# than suggesting that it means OpenAI's hosted service.
+COMMON_BASE_URL_PRESETS = (
+    ("OpenAI 官方", "https://api.openai.com/v1", "openai-completions"),
+    ("DeepSeek 官方", "https://api.deepseek.com", "openai-completions"),
+    ("OpenRouter", "https://openrouter.ai/api/v1", "openai-completions"),
+    ("SiliconFlow", "https://api.siliconflow.cn/v1", "openai-completions"),
+)
+
 PATH_LABELS = {
     "claude_settings": "Claude Code settings.json",
     "codex_config": "Codex config.toml",
@@ -152,16 +162,26 @@ def choose_provider_settings(data: dict, provider_id: str, input_fn=input) -> di
     if not current_api:
         wire = str(current.get("wireApi") or "")
         current_api = "openai-responses" if wire == "responses" else "openai-completions"
-    presets = {
-        "gpt": [("当前配置", current_url, current_api), ("OpenAI 官方", "https://api.openai.com/v1", "openai-completions"), ("自定义", "", "openai-completions")],
-        "opencode-go": [("OpenCode Go 官方", "https://opencode.ai/zen/go/v1", "openai-completions"), ("当前配置", current_url, current_api), ("自定义", "", "openai-completions")],
-    }
+    if provider_id not in {"gpt", "opencode-go"}:
+        raise ValueError(f"不支持的 provider: {provider_id}")
+    presets = []
+    if current_url:
+        presets.append(("当前配置", current_url, current_api))
+    if provider_id == "gpt":
+        # A GPT provider in this project is normally a user-supplied proxy.
+        presets.append(("自定义", "", current_api or "openai-completions"))
+        presets.extend(COMMON_BASE_URL_PRESETS)
+    else:
+        presets.append(("OpenCode Go 官方", "https://opencode.ai/zen/go/v1", "openai-completions"))
+        presets.append(("自定义", "", current_api or "openai-completions"))
     print(f"\n{provider_id} provider 设置:")
-    for i, (name, url, api) in enumerate(presets[provider_id], 1):
+    for i, (name, url, api) in enumerate(presets, 1):
         suffix = f" — {url}" if url else ""
         print(f"  {i}. {name}{suffix}")
-    index = choose_index("选择地址（回车=当前配置，q=取消）: ", len(presets[provider_id]), input_fn)
-    name, url, api = presets[provider_id][index - 1]
+    default = 1
+    default_label = "当前配置" if current_url else presets[default - 1][0]
+    index = choose_index(f"选择地址（回车={default_label}，q=取消）: ", len(presets), input_fn, default)
+    name, url, api = presets[index - 1]
     if name == "自定义" or not url:
         url = input_fn("Base URL: ").strip()
         if not url:
@@ -320,12 +340,18 @@ def compact_agents(data: dict, models: dict[str, dict], choices: dict[str, str] 
             agent["flashModel"] = agent["haikuModel"]
             agent["opusModel"] = choices.get("claude.opusModel") or agent["defaultModel"]
             agent["sonnetModel"] = choices.get("claude.sonnetModel") or agent["defaultModel"]
-            agent["baseURL"] = data["providers"]["opencode-go"].get("baseURL", "")
+            oc = data["providers"]["opencode-go"]
+            oc_base = str(oc.get("baseURL") or "").rstrip("/")
+            agent["anthropicBaseURL"] = oc.get("anthropicBaseURL") or (
+                oc_base[:-3].rstrip("/") if oc_base.endswith("/v1") else oc_base
+            )
+            agent.pop("baseURL", None)
             agent["providers"] = ["opencode-go"]
         elif name == "pi":
             agent["provider"] = "opencode-go"
             agent["defaultModel"] = choices.get("pi.defaultModel") or keep_or_first(agent, "defaultModel", models["opencode-go"], "opencode-go")
-            agent["baseURL"] = data["providers"]["opencode-go"].get("baseURL", "")
+            agent.pop("baseURL", None)
+            agent.pop("api", None)
             agent["providers"] = list(KEEP)
         elif name == "dsh":
             agent["defaultProvider"] = "opencode-go"
@@ -359,6 +385,14 @@ def proposed(data: dict, selected: dict[str, dict], keys: dict[str, str], choice
         p["models"] = selected[pid]
         if provider_settings and pid in provider_settings:
             p.update(provider_settings[pid])
+            if pid == "gpt":
+                p["wireApi"] = "responses" if p.get("api") == "openai-responses" else "chat"
+        if pid == "opencode-go" and p.get("baseURL") and not p.get("anthropicBaseURL"):
+            # OpenCode Go exposes OpenAI at /v1 but Claude's Messages API at
+            # the parent path.  Persist the derived endpoint so every agent
+            # uses the same, unambiguous provider definition.
+            base = str(p["baseURL"]).rstrip("/")
+            p["anthropicBaseURL"] = base[:-3].rstrip("/") if base.endswith("/v1") else base
     if paths:
         out["paths"] = paths
     compact_agents(out, selected, choices)

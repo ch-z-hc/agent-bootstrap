@@ -30,6 +30,41 @@ class AgentVendorsCliTests(unittest.TestCase):
         self.assertIn(cli.PLATFORM, paths)
         self.assertEqual(Path(paths[cli.PLATFORM]["codex_models"]).name, "models.json")
 
+    def test_provider_api_change_updates_codex_wire_api(self):
+        data = {"providers": {"gpt": {"wireApi": "responses"}, "opencode-go": {}}, "agents": {}}
+        out = cli.proposed(
+            data,
+            {"gpt": {"gpt-x": {"name": "GPT X"}}, "opencode-go": {"oc-x": {"name": "OC X"}}},
+            {},
+            provider_settings={
+                "gpt": {"baseURL": "https://gateway/v1", "api": "openai-completions"},
+                "opencode-go": {"baseURL": "https://oc/v1", "api": "openai-completions"},
+            },
+        )
+        self.assertEqual(out["providers"]["gpt"]["wireApi"], "chat")
+
+    def test_compact_agents_records_anthropic_endpoint(self):
+        data = {"providers": {"gpt": {}, "opencode-go": {"baseURL": "https://oc/zen/go/v1"}}, "agents": {"claude": {}}}
+        out = cli.proposed(
+            data,
+            {"gpt": {"gpt-x": {}}, "opencode-go": {"oc-x": {}}},
+            {},
+            choices={"claude.defaultModel": "oc-x", "claude.flashModel": "oc-x", "claude.haikuModel": "oc-x", "claude.sonnetModel": "oc-x", "claude.opusModel": "oc-x"},
+        )
+        self.assertEqual(out["providers"]["opencode-go"]["anthropicBaseURL"], "https://oc/zen/go")
+        self.assertEqual(out["agents"]["claude"]["anthropicBaseURL"], "https://oc/zen/go")
+
+    def test_gpt_defaults_to_custom_url(self):
+        answers = iter(["", "https://my-gateway.example/v1", ""])
+        result = cli.choose_provider_settings({}, "gpt", input_fn=lambda _: next(answers))
+        self.assertEqual(result, {"baseURL": "https://my-gateway.example/v1", "api": "openai-completions"})
+
+    def test_common_vendor_preset_is_available(self):
+        # Common presets are offered for the generic GPT gateway; OpenCode Go
+        # keeps only endpoints known to support its dual-protocol use case.
+        result = cli.choose_provider_settings({}, "gpt", input_fn=lambda _: "3")
+        self.assertEqual(result["baseURL"], "https://api.deepseek.com")
+
 
 if __name__ == "__main__":
     unittest.main()

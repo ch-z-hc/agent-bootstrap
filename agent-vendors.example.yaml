@@ -6,6 +6,8 @@ providers:
     displayName: DeepSeek
     apiKeyEnv: DEEPSEEK_API_KEY
     baseURL: https://api.deepseek.com
+    # Claude Code uses Anthropic Messages; other agents use baseURL.
+    anthropicBaseURL: https://api.deepseek.com/anthropic
     api: openai-completions
     models:
       deepseek-chat:

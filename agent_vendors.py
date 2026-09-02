@@ -212,7 +212,14 @@ def resolve_deepseek_provider(claude, codex, pi, dsh):
     # DSH may carry a separate key; collect it but do not let it win over a
     # three-way consensus.
     dsh_key = dsh["credentials"].get("DEEPSEEK_API_KEY")
-    main_key = keys[0] if keys else dsh_key
+    if keys:
+        # Prefer the value shared by the most agents.  ``keys`` is ordered by
+        # the historical precedence (Claude, Codex, Pi), which also provides
+        # a deterministic tie-breaker when no majority exists.
+        counts = {value: keys.count(value) for value in keys}
+        main_key = max(keys, key=lambda value: counts[value])
+    else:
+        main_key = dsh_key
 
     pi_ds = pi["providers"].get("deepseek", {})
     return {
@@ -317,6 +324,13 @@ def build_vendors(force=False):
 
     opencode_core = resolve_opencode_provider(zcode, dsh)
     hints_oc = opencode_core.pop("_initHints", {})
+    # Preserve a custom Claude endpoint while normalizing the common
+    # OpenCode Go ``/v1`` value to its Anthropic root.
+    claude_url = str(claude.get("baseURL") or "").rstrip("/")
+    if claude_url:
+        opencode_core["anthropicBaseURL"] = (
+            claude_url[:-3].rstrip("/") if claude_url.endswith("/v1") else claude_url
+        )
     providers["opencode-go"] = opencode_core
 
     for variant, info, api in [
@@ -457,17 +471,55 @@ def build_vendors(force=False):
 def resolve_provider(providers, name):
     """Return (provider dict, resolved api key)."""
     p = providers.get(name) or {}
-    key = p.get("apiKey")
-    if not key and p.get("apiKeyEnv"):
-        key = os.environ.get(p["apiKeyEnv"])
-    if not key and p.get("apiKeyRef"):
-        ref = p["apiKeyRef"]
-        key = (providers.get(ref) or {}).get("apiKey")
-        if not key:
-            ref_provider = providers.get(ref) or {}
-            if ref_provider.get("apiKeyEnv"):
-                key = os.environ.get(ref_provider["apiKeyEnv"])
-    return p, key
+
+    def key_for(provider_name: str, seen: set[str]) -> str | None:
+        if provider_name in seen:
+            return None
+        seen.add(provider_name)
+        current = providers.get(provider_name) or {}
+        key = current.get("apiKey")
+        if not key and current.get("apiKeyEnv"):
+            key = os.environ.get(str(current["apiKeyEnv"]))
+        if not key and current.get("apiKeyRef"):
+            key = key_for(str(current["apiKeyRef"]), seen)
+        return key
+
+    return p, key_for(str(name), set())
+
+
+def provider_endpoint(provider: dict, name: str, protocol: str) -> str:
+    """Resolve a provider URL for a wire protocol.
+
+    ``baseURL`` is the canonical OpenAI-compatible endpoint.  Some services
+    expose a second Anthropic endpoint (often at the URL root), so it can be
+    declared explicitly with ``anthropicBaseURL`` or ``endpoints``.  The
+    OpenCode Go URL is derived for backwards compatibility when the explicit
+    value is absent.
+    """
+    endpoints = provider.get("endpoints") or {}
+    if isinstance(endpoints, dict):
+        value = endpoints.get(protocol)
+        if value:
+            return str(value).rstrip("/")
+        # Accept the short protocol name used by older YAML files.
+        short = {"anthropic-messages": "anthropic", "openai-completions": "openai", "openai-responses": "openai"}.get(protocol)
+        if short and endpoints.get(short):
+            return str(endpoints[short]).rstrip("/")
+
+    base = str(provider.get("baseURL") or "").rstrip("/")
+    if protocol in ("anthropic", "anthropic-messages"):
+        explicit = provider.get("anthropicBaseURL")
+        if explicit:
+            return str(explicit).rstrip("/")
+        provider_api = provider.get("api") or provider.get("defaultWireApi")
+        if provider_api in ("anthropic", "anthropic-messages"):
+            return base
+        if name.startswith("opencode-go") and base.endswith("/v1"):
+            return base[:-3].rstrip("/")
+        if base.endswith("/anthropic"):
+            return base
+        return f"{base}/anthropic" if base else ""
+    return base
 
 
 SECRET_RE = re.compile(
@@ -691,16 +743,15 @@ def sync_claude(vendors: dict, dry_run: bool, changes: list) -> None:
     if not key:
         print("[sync][claude] no api key for provider", provider)
         return
-    api = p.get("api") or p.get("defaultWireApi") or ""
-    if provider == "opencode-go-anthropic":
-        # Claude Code appends /v1/messages itself; use root, not .../zen/go/v1.
-        base = a.get("baseURL") or "https://opencode.ai/zen/go"
-    elif provider == "deepseek" or api in ("anthropic-messages", "anthropic"):
-        base = a.get("baseURL") or p.get("baseURL") or ""
-        if provider == "deepseek" and not base.endswith("/anthropic"):
-            base = (base.rstrip("/") + "/anthropic") if base else "https://api.deepseek.com/anthropic"
-    else:
-        base = a.get("baseURL") or ((p.get("baseURL") or "") + "/anthropic")
+    # Claude always speaks Anthropic Messages.  Keep its endpoint separate
+    # from the provider's OpenAI-compatible base URL; otherwise OpenCode Go
+    # would incorrectly receive requests at ``.../zen/go/v1``.
+    base = provider_endpoint(p, provider, "anthropic-messages")
+    if not base:
+        # Legacy agent-level URL remains a last-resort compatibility path.
+        base = str(a.get("anthropicBaseURL") or a.get("baseURL") or "").rstrip("/")
+    if not base and provider == "deepseek":
+        base = "https://api.deepseek.com/anthropic"
 
     model_ids = list((p.get("models") or {}).keys())
     default = a.get("defaultModel") or (model_ids[0] if model_ids else "deepseek-v4-pro")
@@ -765,9 +816,17 @@ def sync_codex(vendors: dict, dry_run: bool, changes: list) -> None:
         for pname, entry in ((pname, entry),):
             gp = providers.get(pname) or {}
             _, gkey = resolve_provider(providers, pname)
-            key = entry.get("apiKey") or gkey
-            base = entry.get("baseURL") or gp.get("baseURL")
-            wire = entry.get("wireApi") or gp.get("wireApi") or gp.get("defaultWireApi") or "responses"
+            # The top-level provider is canonical.  Agent entries may still
+            # provide a value for compatibility with older YAML files.
+            key = gkey or entry.get("apiKey")
+            base = gp.get("baseURL") or entry.get("baseURL")
+            api = gp.get("api")
+            if api == "openai-responses":
+                wire = "responses"
+            elif api == "openai-completions":
+                wire = "chat"
+            else:
+                wire = gp.get("wireApi") or gp.get("defaultWireApi") or entry.get("wireApi") or "responses"
             if pname not in updates:
                 updates[pname] = {}
             if key is not None:
@@ -855,7 +914,7 @@ def sync_pi(vendors: dict, dry_run: bool, changes: list) -> None:
         base = ov.get("baseURL") or p.get("baseURL") or ""
         if name == "deepseek":
             # Match Pi's internal DeepSeek model-store entry.
-            base = ov.get("baseURL") or a.get("baseURL") or "https://api.deepseek.com"
+            base = ov.get("baseURL") or p.get("baseURL") or "https://api.deepseek.com"
             api = ov.get("api") or "openai-completions"
         elif name == "xiaomi":
             base = base or "https://api.xiaomimimo.com/v1"
@@ -920,16 +979,26 @@ def sync_zcode(vendors: dict, dry_run: bool, changes: list) -> None:
 
     def mut(data):
         pmap = data.setdefault("provider", {})
-        for key, entry in (a.get("providers") or {}).items():
+        if not isinstance(pmap, dict):
+            pmap = {}
+            data["provider"] = pmap
+        desired = a.get("providers") or {}
+        if not isinstance(desired, dict):
+            desired = {}
+        # Keep user-managed ZCode providers in lockstep with the central set.
+        # Built-in entries belong to ZCode itself and must remain available.
+        for key in list(pmap):
+            if key not in desired and not str(key).startswith("builtin:"):
+                del pmap[key]
+        for key, entry in desired.items():
+            entry = entry if isinstance(entry, dict) else {}
             gp, gkey = resolve_provider(providers, key)
             existing = pmap.get(key)
             if existing is None:
                 existing = {}
                 pmap[key] = existing
             # Never overwrite a real key with an empty central value.
-            central_key = entry.get("apiKey")
-            if central_key is None or central_key == "":
-                central_key = gkey
+            central_key = gkey or entry.get("apiKey")
             existing_key = (existing.get("options") or {}).get("apiKey")
             if central_key:
                 existing.setdefault("options", {})["apiKey"] = central_key
@@ -941,7 +1010,7 @@ def sync_zcode(vendors: dict, dry_run: bool, changes: list) -> None:
             if entry.get("kind") or gp.get("kind"):
                 existing["kind"] = entry.get("kind") or gp.get("kind")
             opts = existing.setdefault("options", {})
-            base = entry.get("baseURL") or gp.get("baseURL")
+            base = gp.get("baseURL") or entry.get("baseURL")
             if base:
                 opts["baseURL"] = base
             req = entry.get("apiKeyRequired")
