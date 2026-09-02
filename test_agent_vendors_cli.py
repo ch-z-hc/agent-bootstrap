@@ -42,7 +42,7 @@ class AgentVendorsCliTests(unittest.TestCase):
                 "opencode-go": {"baseURL": "https://oc/v1", "api": "openai-completions"},
             },
         )
-        self.assertEqual(out["providers"]["gpt"]["wireApi"], "chat")
+        self.assertEqual(out["providers"]["gpt"]["wireApi"], "responses")
 
     def test_compact_agents_records_anthropic_endpoint(self):
         data = {"providers": {"gpt": {}, "opencode-go": {"baseURL": "https://oc/zen/go/v1"}}, "agents": {"claude": {"provider": "opencode-go"}}}
@@ -72,6 +72,7 @@ class AgentVendorsCliTests(unittest.TestCase):
         pid = cli.provider_add(data, "my-gateway", input_fn=lambda _: next(answers), secret_fn=lambda _: "secret")
         self.assertEqual(pid, "my-gateway")
         self.assertEqual(data["providers"][pid]["api"], "openai-responses")
+        self.assertNotIn("apiKey", data["providers"][pid])
         self.assertEqual(set(data["providers"][pid]["models"]), {"model-a", "model-b"})
 
     def test_discover_provider_models_reads_openai_shape(self):

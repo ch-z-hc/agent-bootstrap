@@ -11,6 +11,7 @@ import copy
 import getpass
 import json
 import os
+import stat
 import subprocess
 import sys
 import re
@@ -38,6 +39,10 @@ def save_config(data: dict) -> None:
     YAML_FILE.parent.mkdir(parents=True, exist_ok=True)
     tmp = YAML_FILE.with_suffix(".yaml.tmp")
     tmp.write_text(yaml.safe_dump(data, allow_unicode=True, sort_keys=False), encoding="utf-8")
+    if YAML_FILE.exists():
+        os.chmod(tmp, stat.S_IMODE(YAML_FILE.stat().st_mode))
+    elif os.name != "nt":
+        os.chmod(tmp, stat.S_IRUSR | stat.S_IWUSR)
     tmp.replace(YAML_FILE)
 
 
@@ -137,8 +142,10 @@ def provider_add(data: dict, provider_id: str | None = None, input_fn=input, sec
     entry = {"displayName": display, "baseURL": base, "api": api}
     if env_name:
         entry["apiKeyEnv"] = env_name
-    if key:
+    if key and not env_name:
         entry["apiKey"] = key
+    elif key and env_name:
+        print("已提供 API key 环境变量，key 不会写入 YAML；请在启动环境中设置该变量。")
     if models:
         entry["models"] = models
     providers[provider_id] = entry
@@ -531,13 +538,14 @@ def proposed(data: dict, selected: dict[str, dict], keys: dict[str, str], choice
         if not isinstance(p, dict):
             p = {}
             providers[pid] = p
-        if keys.get(pid):
+        if keys.get(pid) and not p.get("apiKeyEnv"):
             p["apiKey"] = keys[pid]
         p["models"] = models_for_provider
         if provider_settings and pid in provider_settings:
             p.update(provider_settings[pid])
             if pid == "gpt":
-                p["wireApi"] = "responses" if p.get("api") == "openai-responses" else "chat"
+                # Codex currently accepts the Responses wire API only.
+                p["wireApi"] = "responses"
         if pid == "opencode-go" and p.get("baseURL") and not p.get("anthropicBaseURL"):
             # OpenCode Go exposes OpenAI at /v1 but Claude's Messages API at
             # the parent path.  Persist the derived endpoint so every agent

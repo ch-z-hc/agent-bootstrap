@@ -56,11 +56,60 @@ class ProviderResolutionTests(unittest.TestCase):
                         "providers": {"gpt": {"provider": "gpt", "name": "GPT"}},
                     }
                 },
+                "_prune": True,
             }
             changes = []
             sync.sync_zcode(vendors, False, changes)
             result = json.loads(path.read_text(encoding="utf-8"))
             self.assertEqual(set(result["provider"]), {"gpt"})
+
+    def test_zcode_sync_keeps_stale_providers_without_prune(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "config.json"
+            path.write_text(json.dumps({"provider": {"old": {"name": "old"}}}), encoding="utf-8")
+            vendors = {
+                "paths": {"windows": {"zcode_config": str(path)}},
+                "providers": {"gpt": {"baseURL": "https://gpt", "apiKey": "k"}},
+                "agents": {"zcode": {"enabled": True, "providers": {"gpt": {"provider": "gpt", "name": "GPT"}}}},
+            }
+            sync.sync_zcode(vendors, False, [])
+            result = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(set(result["provider"]), {"old", "gpt"})
+
+    def test_codex_uses_env_key_and_keeps_unmanaged_provider_by_default(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "config.toml"
+            path.write_text(
+                '[model_providers.gpt]\nbase_url = "https://old"\nexperimental_bearer_token = "secret"\n'
+                '\n[model_providers.other]\nbase_url = "https://other"\n',
+                encoding="utf-8",
+            )
+            vendors = {
+                "paths": {"windows": {"codex_config": str(path), "codex_models": str(Path(td) / "models.json")}},
+                "providers": {"gpt": {"baseURL": "https://gateway/v1", "apiKeyEnv": "GPT_KEY", "api": "openai-completions", "models": {"m": {}}}},
+                "agents": {"codex": {"enabled": True, "defaultProvider": "gpt", "defaultModel": "m"}},
+            }
+            changes = []
+            sync.sync_codex(vendors, False, changes)
+            text = path.read_text(encoding="utf-8")
+            self.assertIn('env_key = "GPT_KEY"', text)
+            self.assertNotIn("experimental_bearer_token", text)
+            self.assertIn("[model_providers.other]", text)
+            self.assertIn('wire_api = "responses"', text)
+
+    def test_claude_env_key_does_not_materialize_secret(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "settings.json"
+            path.write_text(json.dumps({"env": {}}), encoding="utf-8")
+            vendors = {
+                "paths": {"windows": {"claude_settings": str(path)}},
+                "providers": {"deepseek": {"apiKeyEnv": "DEEPSEEK_API_KEY", "baseURL": "https://api.deepseek.com", "models": {"m": {}}}},
+                "agents": {"claude": {"enabled": True, "provider": "deepseek", "defaultModel": "m"}},
+            }
+            sync.sync_claude(vendors, False, [])
+            data = json.loads(path.read_text(encoding="utf-8"))
+            self.assertNotIn("ANTHROPIC_AUTH_TOKEN", data["env"])
+            self.assertNotIn("ANTHROPIC_API_KEY", data["env"])
 
 
 if __name__ == "__main__":

@@ -4,7 +4,7 @@
 
 支持 Claude Code、Codex、Pi、ZCode 和 DSH。项目现在以 CLI 为主入口；不会启动 Web 页面，也不会自动创建备份文件。
 
-CLI 会保留 YAML 中已有的 provider 注册表，只编辑现有 provider 的 API key、Base URL、API 类型和 model；不会强制合并或删除 provider。
+CLI 会保留 YAML 中已有的 provider 注册表，只编辑现有 provider 的 API key、Base URL、API 类型和 model。同步默认只新增 / 更新目标配置；删除未托管 provider 必须显式使用 `--prune`。
 
 ## 安装（Windows）
 
@@ -24,6 +24,29 @@ python -m pip install -r requirements.txt
 项目使用 Python 3.10 或更高版本。Linux / macOS 可直接用 `python3` 替换上面的 `python`，并将目标目录替换为 `~/.agents`。
 
 ## 使用
+
+### 最短流程
+
+```powershell
+# 1. 复制示例配置（首次安装）
+Copy-Item .\agent-vendors.example.yaml "$HOME\.agents\agent-vendors.yaml"
+
+# 2. 设置 provider 的 key（示例）
+$env:DEEPSEEK_API_KEY = "sk-..."
+$env:ANTHROPIC_AUTH_TOKEN = $env:DEEPSEEK_API_KEY  # 使用 Claude Code 时需要
+
+# 3. 预览同步结果
+python "$HOME\.agents\agent_vendors.py" sync --dry-run
+
+# 4. 确认后同步
+python "$HOME\.agents\agent_vendors.py" sync
+```
+
+如果已有各 Agent 的本地配置，先运行 `init` 生成集中配置，再执行上面的 dry-run：
+
+```powershell
+python "$HOME\.agents\agent_vendors.py" init
+```
 
 运行 CLI 配置向导：
 
@@ -51,7 +74,7 @@ python "$HOME\.agents\agent_vendors_cli.py" provider remove my-gateway
 
 `provider refresh <id>` 会重新查询并替换该 provider 的 model 列表；加上 `--merge` 则只追加 / 更新查询结果，不删除现有 model。
 
-向导会先让你确认 Claude Code、Codex、Pi、DSH 的配置文件路径（自动探测到的现有文件会作为默认值），再逐个编辑 YAML 中已有的 provider。`gpt` 默认从自定义入口开始，适合代理或自建网关；常用厂商预设只用于方便填写 Base URL。provider 不会被强制合并或删除，agent 也会继续使用各自原来的 provider。随后显示 model 目录，可按编号勾选保留；最后逐项显示各 agent 的 model 选择。输入 API key 时直接回车可保留已有值。确认后同步所有 agent。路径会写入 YAML 的 `paths` 节点，Windows / Linux 可以分别保存自己的路径。
+向导会先让你确认 Claude Code、Codex、Pi、DSH 的配置文件路径（自动探测到的现有文件会作为默认值），再逐个编辑 YAML 中已有的 provider。`gpt` 默认从自定义入口开始，适合代理或自建网关；常用厂商预设只用于方便填写 Base URL。provider 不会被强制合并或删除，agent 也会继续使用各自原来的 provider。随后显示 model 目录，可按编号勾选保留；最后逐项显示各 agent 的 model 选择。API key 建议只配置环境变量名，不要把实际 key 写入 YAML；输入 API key 时直接回车可保留已有值。确认后同步所有 agent。路径会写入 YAML 的 `paths` 节点，Windows / Linux 可以分别保存自己的路径。
 
 常用参数：
 
@@ -61,15 +84,28 @@ python "$HOME\.agents\agent_vendors_cli.py" --yes      # 跳过最终确认
 python "$HOME\.agents\agent_vendors_cli.py" --no-sync  # 保存 YAML，但不同步 agent
 ```
 
+同步默认只新增 / 更新配置，不会删除目标文件中未列出的 provider。确认要清理未托管条目时，再显式使用：
+
+```powershell
+python "$HOME\.agents\agent_vendors.py" sync --prune --dry-run
+python "$HOME\.agents\agent_vendors.py" sync --prune
+```
+
+建议 provider 使用 `apiKeyEnv`。Codex 会写入 `env_key`，Pi 会写入 `$ENV_NAME` 引用，避免把环境中的真实 key 复制到配置文件。ZCode / Claude 不支持项目统一的环境引用格式时，工具会保留已有凭据并提示在启动环境中配置；不要在共享 YAML 中填写真实 `apiKey`。
+
+Claude Code 需要在启动它的环境中提供 `ANTHROPIC_AUTH_TOKEN`（或 `ANTHROPIC_API_KEY`）。例如 provider 使用 `DEEPSEEK_API_KEY` 时，可在当前 PowerShell 会话中执行 `$env:ANTHROPIC_AUTH_TOKEN = $env:DEEPSEEK_API_KEY` 后再启动 `claude`。
+
+在 Linux / macOS 上新建的 YAML 会自动使用仅当前用户可读写的权限；Windows 仍建议将配置目录限制为当前用户访问。
+
 model 列表由 YAML 中已有 model、Codex 本地 `models.json`（如果存在）和内置常见模型合并而成；因此新安装的 model 也可以先在 CLI 中选中，再写入 YAML。
 
-先编辑 `~/.agents/agent-vendors.yaml`，然后预览变更：
+先编辑 `~/.agents/agent-vendors.yaml`，然后预览变更。默认不会删除目标文件中的其他 provider：
 
 ```powershell
 python "$HOME\.agents\agent_vendors.py" sync --dry-run
 ```
 
-确认后应用：
+确认无误后应用：
 
 ```powershell
 python "$HOME\.agents\agent_vendors.py" sync
@@ -80,7 +116,11 @@ python "$HOME\.agents\agent_vendors.py" sync
 ```powershell
 powershell -ExecutionPolicy Bypass -File "$HOME\.agents\sync-agent-vendors.ps1" -DryRun
 powershell -ExecutionPolicy Bypass -File "$HOME\.agents\sync-agent-vendors.ps1"
+powershell -ExecutionPolicy Bypass -File "$HOME\.agents\sync-agent-vendors.ps1" -Prune -DryRun
+powershell -ExecutionPolicy Bypass -File "$HOME\.agents\sync-agent-vendors.ps1" -Prune
 ```
+
+`--prune` / `-Prune` 是破坏性操作，只删除 Codex、Pi、ZCode 配置中未列入 YAML 的 provider；建议始终先执行 dry-run。
 
 后台监听 YAML 变化：
 
@@ -117,7 +157,7 @@ python .\agent_vendors_cli.py --dry-run
 
 `paths.windows`、`paths.linux` 和 `paths.macos` 可以分别保存不同系统的配置文件地址。CLI 会自动探测常见位置，也允许手动输入不存在或自定义路径。
 
-Claude Code 当前通过 `opencode-go` provider 写入 `ANTHROPIC_*` 环境变量；Codex 使用 `gpt`，Pi / DSH / ZCode 会按 YAML 中的 provider 和 model 同步。
+Claude Code 当前通过 `opencode-go` provider 写入 `ANTHROPIC_*` 模型设置；Codex 使用 `gpt`，Pi / DSH / ZCode 会按 YAML 中的 provider 和 model 同步。若 provider 使用 `apiKeyEnv`，Claude 不会把解析后的 key 写入 `settings.json`，请在启动 Claude 前设置 `ANTHROPIC_AUTH_TOKEN` 或 `ANTHROPIC_API_KEY`。
 
 ## 设计参考
 

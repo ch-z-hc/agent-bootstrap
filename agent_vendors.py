@@ -9,6 +9,7 @@ Examples:
     python agent_vendors.py init
     python agent_vendors.py sync --dry-run
     python agent_vendors.py sync
+    python agent_vendors.py sync --prune
 """
 from __future__ import annotations
 
@@ -103,6 +104,8 @@ def save_yaml(path: Path, data) -> None:
         yaml.safe_dump(data, f, allow_unicode=True, sort_keys=False, default_flow_style=False)
     if path.exists():
         os.chmod(tmp, stat.S_IMODE(path.stat().st_mode))
+    elif os.name != "nt":
+        os.chmod(tmp, stat.S_IRUSR | stat.S_IWUSR)
     tmp.replace(path)
 
 
@@ -487,6 +490,24 @@ def resolve_provider(providers, name):
     return p, key_for(str(name), set())
 
 
+def provider_api_key_env(providers, name) -> str | None:
+    """Return the environment variable used by a provider (following refs)."""
+    seen: set[str] = set()
+
+    def find(provider_name: str) -> str | None:
+        if provider_name in seen:
+            return None
+        seen.add(provider_name)
+        current = providers.get(provider_name) or {}
+        value = current.get("apiKeyEnv")
+        if value:
+            return str(value)
+        ref = current.get("apiKeyRef")
+        return find(str(ref)) if ref else None
+
+    return find(str(name))
+
+
 def provider_endpoint(provider: dict, name: str, protocol: str) -> str:
     """Resolve a provider URL for a wire protocol.
 
@@ -709,6 +730,27 @@ def set_toml_values(lines: list[str], updates: dict[str, dict[str, object]]) -> 
     return out, changed
 
 
+def unset_toml_values(lines: list[str], keys_by_section: dict[str | None, set[str]]) -> tuple[list[str], bool]:
+    """Remove simple assignments from selected TOML sections."""
+    out = []
+    changed = False
+    current_section = None
+    for line in lines:
+        sm = re.match(r'^\[([^\]]+)\]\s*$', line.strip())
+        if sm:
+            current_section = sm.group(1)
+        section_key = current_section
+        m = re.match(r'^model_providers\.(.+)$', current_section or "")
+        if m:
+            section_key = m.group(1)
+        km = re.match(r'^\s*([A-Za-z0-9_-]+)\s*=\s*', line)
+        if km and km.group(1) in keys_by_section.get(section_key, set()):
+            changed = True
+            continue
+        out.append(line)
+    return out, changed
+
+
 def prune_toml_provider_sections(
     lines: list[str], allowed: set[str]
 ) -> tuple[list[str], bool]:
@@ -739,8 +781,9 @@ def sync_claude(vendors: dict, dry_run: bool, changes: list) -> None:
     providers = vendors["providers"]
     settings_path = target_path(vendors, "claude_settings")
     provider = a.get("provider") or "deepseek"
+    key_env = a.get("apiKeyEnv") or provider_api_key_env(providers, provider)
     p, key = resolve_provider(providers, provider)
-    if not key:
+    if not key and not key_env:
         print("[sync][claude] no api key for provider", provider)
         return
     # Claude always speaks Anthropic Messages.  Keep its endpoint separate
@@ -767,7 +810,13 @@ def sync_claude(vendors: dict, dry_run: bool, changes: list) -> None:
 
     def mut(data):
         env = data.setdefault("env", {})
-        if provider == "opencode-go-anthropic":
+        if key_env:
+            # Claude settings do not have a documented portable env-ref
+            # syntax. Preserve an existing credential and avoid copying a
+            # resolved environment secret into settings.json.
+            if not env.get("ANTHROPIC_AUTH_TOKEN") and not env.get("ANTHROPIC_API_KEY"):
+                print(f"[sync][claude] provider {provider} uses {key_env}; set ANTHROPIC_AUTH_TOKEN/API_KEY in the launch environment")
+        elif provider == "opencode-go-anthropic":
             env["ANTHROPIC_API_KEY"] = key
             env.pop("ANTHROPIC_AUTH_TOKEN", None)
         else:
@@ -815,21 +864,24 @@ def sync_codex(vendors: dict, dry_run: bool, changes: list) -> None:
         entry = entry or {}
         for pname, entry in ((pname, entry),):
             gp = providers.get(pname) or {}
+            key_env = provider_api_key_env(providers, pname) or entry.get("apiKeyEnv")
             _, gkey = resolve_provider(providers, pname)
             # The top-level provider is canonical.  Agent entries may still
             # provide a value for compatibility with older YAML files.
             key = gkey or entry.get("apiKey")
             base = gp.get("baseURL") or entry.get("baseURL")
             api = gp.get("api")
-            if api == "openai-responses":
-                wire = "responses"
-            elif api == "openai-completions":
-                wire = "chat"
-            else:
-                wire = gp.get("wireApi") or gp.get("defaultWireApi") or entry.get("wireApi") or "responses"
+            # Current Codex releases only support the Responses wire API.
+            # Keep accepting legacy YAML values, but always emit the format
+            # understood by the current config parser.
+            wire = "responses"
             if pname not in updates:
                 updates[pname] = {}
-            if key is not None:
+            if key_env:
+                updates[pname]["env_key"] = key_env
+            elif key is not None:
+                # Backwards compatibility for configurations that explicitly
+                # contain a literal key. Prefer apiKeyEnv for new configs.
                 updates[pname]["experimental_bearer_token"] = key
             if base is not None:
                 updates[pname]["base_url"] = base
@@ -841,8 +893,15 @@ def sync_codex(vendors: dict, dry_run: bool, changes: list) -> None:
 
     def mut(lines):
         lines, changed = set_toml_values(lines, build_updates())
-        allowed = {a.get("defaultProvider") or "gpt"}
-        lines, pruned = prune_toml_provider_sections(lines, allowed)
+        # Do not leave a stale literal token after switching to env_key.
+        pname = a.get("defaultProvider") or "gpt"
+        if provider_api_key_env(providers, pname):
+            lines, removed = unset_toml_values(lines, {pname: {"experimental_bearer_token"}})
+            changed = changed or removed
+        pruned = False
+        if vendors.get("_prune"):
+            allowed = {a.get("defaultProvider") or "gpt"}
+            lines, pruned = prune_toml_provider_sections(lines, allowed)
         return lines, changed or pruned
 
     update_toml(config_path, mut, dry_run, "codex", changes)
@@ -947,9 +1006,10 @@ def sync_pi(vendors: dict, dry_run: bool, changes: list) -> None:
 
     def mut_models(data):
         ps = data.setdefault("providers", {})
-        for key in list(ps.keys()):
-            if key not in provider_names:
-                del ps[key]
+        if vendors.get("_prune"):
+            for key in list(ps.keys()):
+                if key not in provider_names:
+                    del ps[key]
         for name in provider_names:
             info = pi_info(name)
             if info is None:
@@ -959,7 +1019,10 @@ def sync_pi(vendors: dict, dry_run: bool, changes: list) -> None:
             if not pd.get("name"):
                 pd["name"] = p.get("displayName") or name
             pd["baseUrl"] = base
-            pd["apiKey"] = key
+            # Pi supports environment interpolation in models.json. Keep the
+            # central file free of resolved secrets when apiKeyEnv is set.
+            key_env = provider_api_key_env(providers, name)
+            pd["apiKey"] = f"${key_env}" if key_env else key
             pd["api"] = api
             models = p.get("models") or {}
             if models:
@@ -987,9 +1050,10 @@ def sync_zcode(vendors: dict, dry_run: bool, changes: list) -> None:
             desired = {}
         # Keep user-managed ZCode providers in lockstep with the central set.
         # Built-in entries belong to ZCode itself and must remain available.
-        for key in list(pmap):
-            if key not in desired and not str(key).startswith("builtin:"):
-                del pmap[key]
+        if vendors.get("_prune"):
+            for key in list(pmap):
+                if key not in desired and not str(key).startswith("builtin:"):
+                    del pmap[key]
         for key, entry in desired.items():
             entry = entry if isinstance(entry, dict) else {}
             gp, gkey = resolve_provider(providers, key)
@@ -998,9 +1062,16 @@ def sync_zcode(vendors: dict, dry_run: bool, changes: list) -> None:
                 existing = {}
                 pmap[key] = existing
             # Never overwrite a real key with an empty central value.
+            key_env = provider_api_key_env(providers, key) or entry.get("apiKeyEnv")
             central_key = gkey or entry.get("apiKey")
             existing_key = (existing.get("options") or {}).get("apiKey")
-            if central_key:
+            if key_env:
+                # ZCode does not document env interpolation for provider
+                # options; preserve an existing key and avoid copying a
+                # resolved environment secret into the file.
+                if not existing_key:
+                    print(f"[sync][zcode] provider {key} uses {key_env}; configure its key in ZCode or use run mode")
+            elif central_key:
                 existing.setdefault("options", {})["apiKey"] = central_key
             elif existing_key:
                 # keep existing sensitive credential; central didn't supply one
@@ -1105,7 +1176,11 @@ def sync_dsh(vendors: dict, dry_run: bool, changes: list) -> None:
             # ref_path like "deepseek.apiKey" / "opencode-go.apiKey"
             parts = ref_path.split(".")
             if len(parts) == 2 and parts[1] == "apiKey":
-                p, key = resolve_provider(providers, parts[0])
+                # DSH settings already carry apiKeyEnv. Do not materialize an
+                # environment secret into .credentials.yaml.
+                if provider_api_key_env(providers, parts[0]):
+                    continue
+                _, key = resolve_provider(providers, parts[0])
                 if key is not None:
                     refs[env_name] = key
 
@@ -1121,6 +1196,11 @@ def cmd_sync(args):
         print(f"[sync] missing {VENDORS_FILE}; run init first")
         return
     vendors = load_yaml(VENDORS_FILE)
+    if not isinstance(vendors, dict):
+        print("[sync] invalid YAML root; expected an object")
+        return
+    # Internal switch consumed by adapters; never persisted to YAML.
+    vendors["_prune"] = bool(getattr(args, "prune", False))
     changes: list[str] = []
     sync_claude(vendors, args.dry_run, changes)
     sync_codex(vendors, args.dry_run, changes)
@@ -1146,6 +1226,7 @@ def main():
     init_p.add_argument("--force", action="store_true", help="overwrite existing agent-vendors.yaml")
     sync_p = sub.add_parser("sync", help="sync agent configs from agent-vendors.yaml")
     sync_p.add_argument("--dry-run", action="store_true", help="show what would change without writing")
+    sync_p.add_argument("--prune", action="store_true", help="remove unmanaged provider entries (destructive)")
     args = parser.parse_args()
     if args.command == "init":
         cmd_init(args)
