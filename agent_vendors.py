@@ -51,6 +51,23 @@ TARGETS = {
 }
 
 
+def target_path(vendors: dict, key: str) -> Path:
+    """Resolve an optional per-machine path from YAML, with platform defaults."""
+    path_map = vendors.get("paths") or {}
+    platform_key = "windows" if os.name == "nt" else ("macos" if sys.platform == "darwin" else "linux")
+    configured = None
+    if isinstance(path_map, dict):
+        if isinstance(path_map.get(platform_key), dict):
+            configured = path_map[platform_key].get(key)
+        else:
+            configured = path_map.get(key)
+            if isinstance(configured, dict):
+                configured = configured.get(platform_key) or configured.get("default")
+    if configured:
+        return Path(os.path.expandvars(os.path.expanduser(str(configured))))
+    return TARGETS[key]
+
+
 def mask(value: str | None) -> str:
     """Show only a hint of a secret."""
     if not value:
@@ -691,6 +708,7 @@ def sync_claude(vendors: dict, dry_run: bool, no_backup: bool, changes: list) ->
     if not a.get("enabled", True):
         return
     providers = vendors["providers"]
+    settings_path = target_path(vendors, "claude_settings")
     provider = a.get("provider") or "deepseek"
     p, key = resolve_provider(providers, provider)
     if not key:
@@ -710,6 +728,9 @@ def sync_claude(vendors: dict, dry_run: bool, no_backup: bool, changes: list) ->
     model_ids = list((p.get("models") or {}).keys())
     default = a.get("defaultModel") or (model_ids[0] if model_ids else "deepseek-v4-pro")
     flash = a.get("flashModel") or (model_ids[-1] if len(model_ids) > 1 else (model_ids[0] if model_ids else default))
+    haiku = a.get("haikuModel") or flash
+    opus = a.get("opusModel") or default
+    sonnet = a.get("sonnetModel") or default
     use_suffix = provider == "deepseek" and "[1m]" not in str(default)
     max_ctx = int(a.get("maxContextTokens") or 1000000)
 
@@ -725,14 +746,14 @@ def sync_claude(vendors: dict, dry_run: bool, no_backup: bool, changes: list) ->
             env["ANTHROPIC_AUTH_TOKEN"] = key
             env.pop("ANTHROPIC_API_KEY", None)
         env["ANTHROPIC_BASE_URL"] = base
-        env["ANTHROPIC_DEFAULT_HAIKU_MODEL"] = fmt(flash)
-        env["ANTHROPIC_DEFAULT_OPUS_MODEL"] = fmt(default)
-        env["ANTHROPIC_DEFAULT_SONNET_MODEL"] = fmt(default)
+        env["ANTHROPIC_DEFAULT_HAIKU_MODEL"] = fmt(haiku)
+        env["ANTHROPIC_DEFAULT_OPUS_MODEL"] = fmt(opus)
+        env["ANTHROPIC_DEFAULT_SONNET_MODEL"] = fmt(sonnet)
         env["ANTHROPIC_MODEL"] = fmt(default)
         env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] = str(max_ctx)
         data["model"] = fmt(default)
 
-    update_json(TARGETS["claude_settings"], mut, dry_run, "claude", no_backup, changes)
+    update_json(settings_path, mut, dry_run, "claude", no_backup, changes)
 
 
 def sync_codex(vendors: dict, dry_run: bool, no_backup: bool, changes: list) -> None:
@@ -740,6 +761,9 @@ def sync_codex(vendors: dict, dry_run: bool, no_backup: bool, changes: list) -> 
     if not a.get("enabled", True):
         return
     providers = vendors["providers"]
+    config_path = target_path(vendors, "codex_config")
+    models_path = target_path(vendors, "codex_models")
+    deepseek_path = target_path(vendors, "codex_deepseek_config")
 
     # Main config.toml
     def build_updates() -> dict:
@@ -751,10 +775,10 @@ def sync_codex(vendors: dict, dry_run: bool, no_backup: bool, changes: list) -> 
         if a.get("defaultModelReasoningEffort"):
             updates[None]["model_reasoning_effort"] = a["defaultModelReasoningEffort"]
         if a.get("defaultProvider") == "deepseek":
-            catalog = (a.get("deepseekProfile") or {}).get("modelCatalogJson") or f"{HOME_POSIX}/.codex/models.deepseek.json"
+            catalog = (a.get("deepseekProfile") or {}).get("modelCatalogJson") or str(deepseek_path).replace("\\", "/")
             updates[None]["model_catalog_json"] = catalog
         else:
-            updates[None]["model_catalog_json"] = f"{HOME_POSIX}/.codex/models.json"
+            updates[None]["model_catalog_json"] = str(models_path).replace("\\", "/")
         # Codex supports one active provider in this setup. Only synchronize
         # the configured default provider and discard any stale sections.
         pname = a.get("defaultProvider") or "gpt"
@@ -785,7 +809,7 @@ def sync_codex(vendors: dict, dry_run: bool, no_backup: bool, changes: list) -> 
         lines, pruned = prune_toml_provider_sections(lines, allowed)
         return lines, changed or pruned
 
-    update_toml(TARGETS["codex_config"], mut, dry_run, "codex", no_backup, changes)
+    update_toml(config_path, mut, dry_run, "codex", no_backup, changes)
 
     pname = a.get("defaultProvider") or "gpt"
     provider_entry = (a.get("providers") or {}).get(pname) or {}
@@ -794,7 +818,7 @@ def sync_codex(vendors: dict, dry_run: bool, no_backup: bool, changes: list) -> 
     allowed_models = set((provider_entry.get("models") or {}).keys())
     if not allowed_models:
         allowed_models = set(((providers.get(pname) or {}).get("models") or {}).keys())
-    if allowed_models and TARGETS["codex_models"].exists():
+    if allowed_models and models_path.exists():
         def mut_catalog(data):
             models = data.get("models")
             if not isinstance(models, list):
@@ -808,7 +832,7 @@ def sync_codex(vendors: dict, dry_run: bool, no_backup: bool, changes: list) -> 
                 data["models"] = filtered
 
         update_json(
-            TARGETS["codex_models"],
+            models_path,
             mut_catalog,
             dry_run,
             "codex model catalog",
@@ -830,7 +854,7 @@ def sync_codex(vendors: dict, dry_run: bool, no_backup: bool, changes: list) -> 
             if prof.get("modelCatalogJson"):
                 updates[None]["model_catalog_json"] = prof["modelCatalogJson"]
             return set_toml_values(lines, updates)
-        update_toml(TARGETS["codex_deepseek_config"], mut2, dry_run, "codex deepseek profile", no_backup, changes)
+        update_toml(deepseek_path, mut2, dry_run, "codex deepseek profile", no_backup, changes)
 
 
 def sync_pi(vendors: dict, dry_run: bool, no_backup: bool, changes: list) -> None:
@@ -838,6 +862,8 @@ def sync_pi(vendors: dict, dry_run: bool, no_backup: bool, changes: list) -> Non
     if not a.get("enabled", True):
         return
     providers = vendors["providers"]
+    settings_path = target_path(vendors, "pi_settings")
+    models_path = target_path(vendors, "pi_models")
     provider_names = a.get("providers") or [a.get("provider") or "deepseek"]
     provider = a.get("provider") or provider_names[0] or "deepseek"
     default = a.get("defaultModel") or "deepseek-v4-pro"
@@ -871,7 +897,7 @@ def sync_pi(vendors: dict, dry_run: bool, no_backup: bool, changes: list) -> Non
         if a.get("defaultThinkingLevel"):
             data["defaultThinkingLevel"] = a["defaultThinkingLevel"]
 
-    update_json(TARGETS["pi_settings"], mut_settings, dry_run, "pi settings", no_backup, changes)
+    update_json(settings_path, mut_settings, dry_run, "pi settings", no_backup, changes)
 
     def pi_model_entry(mid, m, name, api, base):
         return {
@@ -906,7 +932,7 @@ def sync_pi(vendors: dict, dry_run: bool, no_backup: bool, changes: list) -> Non
             elif not pd.get("models"):
                 pd["models"] = []
 
-    update_json(TARGETS["pi_models"], mut_models, dry_run, "pi models", no_backup, changes)
+    update_json(models_path, mut_models, dry_run, "pi models", no_backup, changes)
 
 
 def sync_zcode(vendors: dict, dry_run: bool, no_backup: bool, changes: list) -> None:
@@ -914,6 +940,7 @@ def sync_zcode(vendors: dict, dry_run: bool, no_backup: bool, changes: list) -> 
     if not a.get("enabled", True):
         return
     providers = vendors["providers"]
+    config_path = target_path(vendors, "zcode_config")
 
     def mut(data):
         pmap = data.setdefault("provider", {})
@@ -974,7 +1001,7 @@ def sync_zcode(vendors: dict, dry_run: bool, no_backup: bool, changes: list) -> 
                         }
                 existing["models"] = new_models
 
-    update_json(TARGETS["zcode_config"], mut, dry_run, "zcode", no_backup, changes)
+    update_json(config_path, mut, dry_run, "zcode", no_backup, changes)
 
 
 def sync_dsh(vendors: dict, dry_run: bool, no_backup: bool, changes: list) -> None:
@@ -982,6 +1009,8 @@ def sync_dsh(vendors: dict, dry_run: bool, no_backup: bool, changes: list) -> No
     if not a.get("enabled", True):
         return
     providers = vendors["providers"]
+    settings_path = target_path(vendors, "dsh_settings")
+    credentials_path = target_path(vendors, "dsh_credentials")
     pi_names = a.get("llmPiAiProviders") or []
     ds_models = a.get("llmDeepseekModels") or []
 
@@ -1022,7 +1051,7 @@ def sync_dsh(vendors: dict, dry_run: bool, no_backup: bool, changes: list) -> No
             deep_mods.append({"id": mid, "name": m.get("name") or mid})
         data.setdefault("llm-deepseek", {})["models"] = deep_mods
 
-    update_yaml(TARGETS["dsh_settings"], mut_settings, dry_run, "dsh settings", no_backup, changes)
+    update_yaml(settings_path, mut_settings, dry_run, "dsh settings", no_backup, changes)
 
     def mut_creds(data):
         refs = data.setdefault("refs", {})
@@ -1035,7 +1064,7 @@ def sync_dsh(vendors: dict, dry_run: bool, no_backup: bool, changes: list) -> No
                 if key is not None:
                     refs[env_name] = key
 
-    update_yaml(TARGETS["dsh_credentials"], mut_creds, dry_run, "dsh credentials", no_backup, changes)
+    update_yaml(credentials_path, mut_creds, dry_run, "dsh credentials", no_backup, changes)
 
 
 def cmd_init(args):

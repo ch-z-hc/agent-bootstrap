@@ -4,11 +4,14 @@
 
 支持的目标包括 Claude、Codex、Pi、ZCode 和 DSH。修改 `~/.agents/agent-vendors.yaml` 后，可以手动同步，或运行 watcher 自动同步。
 
+推荐使用内置的 CLI 配置向导：只选择 model、填写 API key，程序会自动收敛为 `gpt` 和 `opencode-go` 两个 provider，并修正各 agent 的引用。
+
 ## 安装
 
 ```powershell
-git clone https://github.com/<your-account>/agent-vendors-sync.git
+git clone https://github.com/ch-z-hc/agent-vendors-sync.git
 Copy-Item .\agent_vendors.py, .\sync-agent-vendors.ps1, .\watch-agent-vendors.py "$HOME\.agents\"
+Copy-Item .\agent_vendors_cli.py, .\start-agent-vendors-cli.ps1 "$HOME\.agents\"
 Copy-Item .\agent-vendors.example.yaml "$HOME\.agents\agent-vendors.yaml"
 ```
 
@@ -19,6 +22,20 @@ python -m pip install -r requirements.txt
 ```
 
 ## 使用
+
+运行 CLI 配置向导：
+
+```powershell
+python "$HOME\.agents\agent_vendors_cli.py"
+```
+
+或使用包装脚本：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File "$HOME\.agents\start-agent-vendors-cli.ps1"
+```
+
+向导会先让你确认 Claude Code、Codex、Pi、DSH 的配置文件路径（自动探测到的现有文件会作为默认值），再处理 `gpt` 和 `opencode-go` 的可用 model，最后逐项显示 Codex、Claude Code（Haiku / Sonnet / Opus / 默认）、Pi 和 DSH 的 model 选择。输入 API key 时直接回车可保留已有值；模型输入编号（例如 `1,3,5`）或直接回车保留当前值。确认后自动备份 YAML、移除其他 provider，并同步所有 agent。路径会写入 YAML 的 `paths` 节点，Windows / Linux 可以分别保存自己的路径。
 
 先编辑 `~/.agents/agent-vendors.yaml`，然后预览变更：
 
@@ -64,6 +81,10 @@ python "$HOME\.agents\agent_vendors.py" init
 ```
 
 `init` 默认不会覆盖已有 YAML；需要覆盖时显式加 `--force`。
+
+## 设计参考
+
+交互方式参考了 [One API](https://github.com/songquanpeng/one-api) 的渠道/模型表单、[Open WebUI](https://github.com/open-webui/open-webui) 的 provider-agnostic 设置，以及 [Claude Code Manager UI](https://github.com/Rylaispirit/claude-code-manager-ui) 的 local-first 和凭据不回显原则。本项目采用同样的本地监听、结构化表单和显式同步步骤，但不引入前端构建链或数据库。
 
 ## 安全提示
 
