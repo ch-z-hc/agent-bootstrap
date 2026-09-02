@@ -32,8 +32,7 @@ python -m pip install -r requirements.txt
 Copy-Item .\agent-vendors.example.yaml "$HOME\.agents\agent-vendors.yaml"
 
 # 2. 设置 provider 的 key（示例）
-$env:DEEPSEEK_API_KEY = "sk-..."
-$env:ANTHROPIC_AUTH_TOKEN = $env:DEEPSEEK_API_KEY  # 使用 Claude Code 时需要
+$env:DEEPSEEK_API_KEY = "sk-..."  # 也可以直接在向导中输入 key
 
 # 3. 预览同步结果
 python "$HOME\.agents\agent_vendors.py" sync --dry-run
@@ -74,7 +73,7 @@ python "$HOME\.agents\agent_vendors_cli.py" provider remove my-gateway
 
 `provider refresh <id>` 会重新查询并替换该 provider 的 model 列表；加上 `--merge` 则只追加 / 更新查询结果，不删除现有 model。
 
-向导会先让你确认 Claude Code、Codex、Pi、DSH 的配置文件路径（自动探测到的现有文件会作为默认值），再逐个编辑 YAML 中已有的 provider。`gpt` 默认从自定义入口开始，适合代理或自建网关；常用厂商预设只用于方便填写 Base URL。provider 不会被强制合并或删除，agent 也会继续使用各自原来的 provider。随后显示 model 目录，可按编号勾选保留；最后逐项显示各 agent 的 model 选择。API key 建议只配置环境变量名，不要把实际 key 写入 YAML；输入 API key 时直接回车可保留已有值。确认后同步所有 agent。路径会写入 YAML 的 `paths` 节点，Windows / Linux 可以分别保存自己的路径。
+向导会先让你确认 Claude Code、Codex、Pi、DSH 的配置文件路径（自动探测到的现有文件会作为默认值），再逐个编辑 YAML 中已有的 provider。`gpt` 默认从自定义入口开始，适合代理或自建网关；常用厂商预设只用于方便填写 Base URL。provider 不会被强制合并或删除，agent 也会继续使用各自原来的 provider。随后显示 model 目录，可按编号勾选保留；最后逐项显示各 agent 的 model 选择。API key 可以直接输入并保存到本机 YAML，也可以只配置环境变量名；输入 API key 时直接回车可保留已有值。确认后同步所有 agent。路径会写入 YAML 的 `paths` 节点，Windows / Linux 可以分别保存自己的路径。
 
 常用参数：
 
@@ -91,9 +90,9 @@ python "$HOME\.agents\agent_vendors.py" sync --prune --dry-run
 python "$HOME\.agents\agent_vendors.py" sync --prune
 ```
 
-建议 provider 使用 `apiKeyEnv`。Codex 会写入 `env_key`，Pi 会写入 `$ENV_NAME` 引用，避免把环境中的真实 key 复制到配置文件。ZCode / Claude 不支持项目统一的环境引用格式时，工具会保留已有凭据并提示在启动环境中配置；不要在共享 YAML 中填写真实 `apiKey`。
+provider 认证支持两种方式：直接填写 `apiKey`，或者填写 `apiKeyEnv`。如果两者同时存在，直接填写的 `apiKey` 优先，方便本机快速切换；只有环境变量方式时，Codex 使用 `env_key`，Pi 使用 `$ENV_NAME` 引用。
 
-Claude Code 需要在启动它的环境中提供 `ANTHROPIC_AUTH_TOKEN`（或 `ANTHROPIC_API_KEY`）。例如 provider 使用 `DEEPSEEK_API_KEY` 时，可在当前 PowerShell 会话中执行 `$env:ANTHROPIC_AUTH_TOKEN = $env:DEEPSEEK_API_KEY` 后再启动 `claude`。
+如果 Claude provider 只配置了 `apiKeyEnv`，需要在启动它的环境中提供 `ANTHROPIC_AUTH_TOKEN`（或 `ANTHROPIC_API_KEY`）；直接填写 `apiKey` 时无需额外设置。
 
 在 Linux / macOS 上新建的 YAML 会自动使用仅当前用户可读写的权限；Windows 仍建议将配置目录限制为当前用户访问。
 
@@ -157,7 +156,7 @@ python .\agent_vendors_cli.py --dry-run
 
 `paths.windows`、`paths.linux` 和 `paths.macos` 可以分别保存不同系统的配置文件地址。CLI 会自动探测常见位置，也允许手动输入不存在或自定义路径。
 
-Claude Code 当前通过 `opencode-go` provider 写入 `ANTHROPIC_*` 模型设置；Codex 使用 `gpt`，Pi / DSH / ZCode 会按 YAML 中的 provider 和 model 同步。若 provider 使用 `apiKeyEnv`，Claude 不会把解析后的 key 写入 `settings.json`，请在启动 Claude 前设置 `ANTHROPIC_AUTH_TOKEN` 或 `ANTHROPIC_API_KEY`。
+Claude Code 当前通过 `opencode-go` provider 写入 `ANTHROPIC_*` 模型设置；Codex 使用 `gpt`，Pi / DSH / ZCode 会按 YAML 中的 provider 和 model 同步。
 
 ## 设计参考
 

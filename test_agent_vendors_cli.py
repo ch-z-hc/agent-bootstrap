@@ -72,7 +72,7 @@ class AgentVendorsCliTests(unittest.TestCase):
         pid = cli.provider_add(data, "my-gateway", input_fn=lambda _: next(answers), secret_fn=lambda _: "secret")
         self.assertEqual(pid, "my-gateway")
         self.assertEqual(data["providers"][pid]["api"], "openai-responses")
-        self.assertNotIn("apiKey", data["providers"][pid])
+        self.assertEqual(data["providers"][pid]["apiKey"], "secret")
         self.assertEqual(set(data["providers"][pid]["models"]), {"model-a", "model-b"})
 
     def test_discover_provider_models_reads_openai_shape(self):

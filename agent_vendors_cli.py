@@ -142,10 +142,8 @@ def provider_add(data: dict, provider_id: str | None = None, input_fn=input, sec
     entry = {"displayName": display, "baseURL": base, "api": api}
     if env_name:
         entry["apiKeyEnv"] = env_name
-    if key and not env_name:
+    if key:
         entry["apiKey"] = key
-    elif key and env_name:
-        print("已提供 API key 环境变量，key 不会写入 YAML；请在启动环境中设置该变量。")
     if models:
         entry["models"] = models
     providers[provider_id] = entry
@@ -538,7 +536,7 @@ def proposed(data: dict, selected: dict[str, dict], keys: dict[str, str], choice
         if not isinstance(p, dict):
             p = {}
             providers[pid] = p
-        if keys.get(pid) and not p.get("apiKeyEnv"):
+        if keys.get(pid):
             p["apiKey"] = keys[pid]
         p["models"] = models_for_provider
         if provider_settings and pid in provider_settings:

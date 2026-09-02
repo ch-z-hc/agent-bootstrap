@@ -810,7 +810,7 @@ def sync_claude(vendors: dict, dry_run: bool, changes: list) -> None:
 
     def mut(data):
         env = data.setdefault("env", {})
-        if key_env:
+        if key_env and not key:
             # Claude settings do not have a documented portable env-ref
             # syntax. Preserve an existing credential and avoid copying a
             # resolved environment secret into settings.json.
@@ -864,11 +864,11 @@ def sync_codex(vendors: dict, dry_run: bool, changes: list) -> None:
         entry = entry or {}
         for pname, entry in ((pname, entry),):
             gp = providers.get(pname) or {}
-            key_env = provider_api_key_env(providers, pname) or entry.get("apiKeyEnv")
             _, gkey = resolve_provider(providers, pname)
             # The top-level provider is canonical.  Agent entries may still
             # provide a value for compatibility with older YAML files.
             key = gkey or entry.get("apiKey")
+            key_env = (provider_api_key_env(providers, pname) or entry.get("apiKeyEnv")) if key is None else None
             base = gp.get("baseURL") or entry.get("baseURL")
             api = gp.get("api")
             # Current Codex releases only support the Responses wire API.
@@ -895,7 +895,7 @@ def sync_codex(vendors: dict, dry_run: bool, changes: list) -> None:
         lines, changed = set_toml_values(lines, build_updates())
         # Do not leave a stale literal token after switching to env_key.
         pname = a.get("defaultProvider") or "gpt"
-        if provider_api_key_env(providers, pname):
+        if provider_api_key_env(providers, pname) and not ((providers.get(pname) or {}).get("apiKey") or ((a.get("providers") or {}).get(pname) or {}).get("apiKey")):
             lines, removed = unset_toml_values(lines, {pname: {"experimental_bearer_token"}})
             changed = changed or removed
         pruned = False
@@ -1019,10 +1019,11 @@ def sync_pi(vendors: dict, dry_run: bool, changes: list) -> None:
             if not pd.get("name"):
                 pd["name"] = p.get("displayName") or name
             pd["baseUrl"] = base
-            # Pi supports environment interpolation in models.json. Keep the
-            # central file free of resolved secrets when apiKeyEnv is set.
+            # Prefer a literal key when one is configured for convenience;
+            # environment interpolation remains the fallback for env-only
+            # providers.
             key_env = provider_api_key_env(providers, name)
-            pd["apiKey"] = f"${key_env}" if key_env else key
+            pd["apiKey"] = key if key else (f"${key_env}" if key_env else key)
             pd["api"] = api
             models = p.get("models") or {}
             if models:
@@ -1062,10 +1063,10 @@ def sync_zcode(vendors: dict, dry_run: bool, changes: list) -> None:
                 existing = {}
                 pmap[key] = existing
             # Never overwrite a real key with an empty central value.
-            key_env = provider_api_key_env(providers, key) or entry.get("apiKeyEnv")
             central_key = gkey or entry.get("apiKey")
+            key_env = (provider_api_key_env(providers, key) or entry.get("apiKeyEnv")) if not central_key else None
             existing_key = (existing.get("options") or {}).get("apiKey")
-            if key_env:
+            if key_env and not central_key:
                 # ZCode does not document env interpolation for provider
                 # options; preserve an existing key and avoid copying a
                 # resolved environment secret into the file.
@@ -1178,7 +1179,7 @@ def sync_dsh(vendors: dict, dry_run: bool, changes: list) -> None:
             if len(parts) == 2 and parts[1] == "apiKey":
                 # DSH settings already carry apiKeyEnv. Do not materialize an
                 # environment secret into .credentials.yaml.
-                if provider_api_key_env(providers, parts[0]):
+                if provider_api_key_env(providers, parts[0]) and not ((providers.get(parts[0]) or {}).get("apiKey")):
                     continue
                 _, key = resolve_provider(providers, parts[0])
                 if key is not None:
