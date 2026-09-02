@@ -18,6 +18,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import sys
 import time
 from pathlib import Path
@@ -40,6 +41,7 @@ HOME_POSIX = str(HOME).replace("\\", "/")
 TARGETS = {
     "claude_settings": HOME / ".claude" / "settings.json",
     "codex_config": HOME / ".codex" / "config.toml",
+    "codex_models": HOME / ".codex" / "models.json",
     "codex_deepseek_config": HOME / ".codex" / "deepseek.config.toml",
     "pi_settings": HOME / ".pi" / "agent" / "settings.json",
     "pi_models": HOME / ".pi" / "agent" / "models.json",
@@ -70,6 +72,8 @@ def save_json(path: Path, data) -> None:
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
         f.write("\n")
+    if path.exists():
+        os.chmod(tmp, stat.S_IMODE(path.stat().st_mode))
     tmp.replace(path)
 
 
@@ -83,6 +87,8 @@ def save_yaml(path: Path, data) -> None:
     tmp = path.with_suffix(path.suffix + ".tmp")
     with open(tmp, "w", encoding="utf-8") as f:
         yaml.safe_dump(data, f, allow_unicode=True, sort_keys=False, default_flow_style=False)
+    if path.exists():
+        os.chmod(tmp, stat.S_IMODE(path.stat().st_mode))
     tmp.replace(path)
 
 
@@ -489,6 +495,8 @@ def write_text(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(text, encoding="utf-8")
+    if path.exists():
+        os.chmod(tmp, stat.S_IMODE(path.stat().st_mode))
     tmp.replace(path)
 
 
@@ -655,6 +663,29 @@ def set_toml_values(lines: list[str], updates: dict[str, dict[str, object]]) -> 
     return out, changed
 
 
+def prune_toml_provider_sections(
+    lines: list[str], allowed: set[str]
+) -> tuple[list[str], bool]:
+    """Remove Codex model provider sections not declared in the YAML."""
+    out: list[str] = []
+    changed = False
+    i = 0
+    while i < len(lines):
+        match = re.match(r'^\[model_providers\.([^\]]+)\]\s*$', lines[i].strip())
+        if not match or match.group(1) in allowed:
+            out.append(lines[i])
+            i += 1
+            continue
+
+        changed = True
+        if out and out[-1] == "":
+            out.pop()
+        i += 1
+        while i < len(lines) and not re.match(r'^\[[^\]]+\]\s*$', lines[i].strip()):
+            i += 1
+    return out, changed
+
+
 def sync_claude(vendors: dict, dry_run: bool, no_backup: bool, changes: list) -> None:
     a = vendors["agents"].get("claude") or {}
     if not a.get("enabled", True):
@@ -699,6 +730,7 @@ def sync_claude(vendors: dict, dry_run: bool, no_backup: bool, changes: list) ->
         env["ANTHROPIC_DEFAULT_SONNET_MODEL"] = fmt(default)
         env["ANTHROPIC_MODEL"] = fmt(default)
         env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] = str(max_ctx)
+        data["model"] = fmt(default)
 
     update_json(TARGETS["claude_settings"], mut, dry_run, "claude", no_backup, changes)
 
@@ -723,7 +755,11 @@ def sync_codex(vendors: dict, dry_run: bool, no_backup: bool, changes: list) -> 
             updates[None]["model_catalog_json"] = catalog
         else:
             updates[None]["model_catalog_json"] = f"{HOME_POSIX}/.codex/models.json"
-        for pname, entry in (a.get("providers") or {}).items():
+        # Codex supports one active provider in this setup. Only synchronize
+        # the configured default provider and discard any stale sections.
+        pname = a.get("defaultProvider") or "gpt"
+        entry = (a.get("providers") or {}).get(pname) or {}
+        for pname, entry in ((pname, entry),):
             gp = providers.get(pname) or {}
             _, gkey = resolve_provider(providers, pname)
             key = entry.get("apiKey") or gkey
@@ -742,9 +778,37 @@ def sync_codex(vendors: dict, dry_run: bool, no_backup: bool, changes: list) -> 
         return updates
 
     def mut(lines):
-        return set_toml_values(lines, build_updates())
+        lines, changed = set_toml_values(lines, build_updates())
+        allowed = {a.get("defaultProvider") or "gpt"}
+        lines, pruned = prune_toml_provider_sections(lines, allowed)
+        return lines, changed or pruned
 
     update_toml(TARGETS["codex_config"], mut, dry_run, "codex", no_backup, changes)
+
+    pname = a.get("defaultProvider") or "gpt"
+    provider_entry = (a.get("providers") or {}).get(pname) or {}
+    allowed_models = set((provider_entry.get("models") or {}).keys())
+    if allowed_models and TARGETS["codex_models"].exists():
+        def mut_catalog(data):
+            models = data.get("models")
+            if not isinstance(models, list):
+                return
+            filtered = [
+                model for model in models
+                if isinstance(model, dict)
+                and (model.get("slug") or model.get("id")) in allowed_models
+            ]
+            if filtered:
+                data["models"] = filtered
+
+        update_json(
+            TARGETS["codex_models"],
+            mut_catalog,
+            dry_run,
+            "codex model catalog",
+            no_backup,
+            changes,
+        )
 
     # deepseek profile
     prof = a.get("deepseekProfile") or {}
