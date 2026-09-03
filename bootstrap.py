@@ -104,8 +104,15 @@ def fetch_models(base_url, api_key, timeout=10):
     return []
 
 
+def _lock_down(path):
+    """New files holding secrets: user-only on posix."""
+    if os.name != "nt":
+        os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)
+
+
 def save_json(path, data):
     path.parent.mkdir(parents=True, exist_ok=True)
+    new_file = not path.exists()
     tmp = path.with_suffix(path.suffix + ".tmp")
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
@@ -113,6 +120,8 @@ def save_json(path, data):
     if path.exists():
         os.chmod(tmp, stat.S_IMODE(path.stat().st_mode))
     tmp.replace(path)
+    if new_file:
+        _lock_down(path)
 
 
 def patch_json(path, mut):
@@ -185,17 +194,23 @@ def patch_toml(path, updates, nested_prefix="model_providers."):
 
 def write_text(path, text):
     path.parent.mkdir(parents=True, exist_ok=True)
+    new_file = not path.exists()
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(text, encoding="utf-8")
     if path.exists():
         os.chmod(tmp, stat.S_IMODE(path.stat().st_mode))
     tmp.replace(path)
+    if new_file:
+        _lock_down(path)
 
 
 # ---------------------------------------------------------------- sync pieces
 
 def setup_claude(env, dry_run, out):
     p = HOME / ".claude" / "settings.json"
+    if not p.exists():
+        out.append(("claude", str(p), "skip (not installed)"))
+        return
     root = OPENCODE_ROOT  # pi-style clients append /v1/messages themselves
     cm, son, opu = env["CLAUDE_MODEL"], env["CLAUDE_SONNET"], env["CLAUDE_OPUS"]
 
@@ -219,6 +234,9 @@ def setup_claude(env, dry_run, out):
 
 def setup_codex(env, dry_run, out):
     p = HOME / ".codex" / "config.toml"
+    if not p.exists():
+        out.append(("codex", str(p), "skip (not installed)"))
+        return
     updates = {
         None: {"model": env["GPT_MODEL"], "model_provider": "gpt"},
         "gpt": {"base_url": env["GPT_BASE_URL"].rstrip("/"), "wire_api": "responses",
@@ -266,6 +284,9 @@ def pi_models_payload(env, discovered_oc, discovered_gpt):
 
 def setup_pi(env, dry_run, out, discovered_oc, discovered_gpt):
     sp = HOME / ".pi" / "agent" / "settings.json"
+    if not sp.exists():
+        out.append(("pi", str(sp), "skip (not installed)"))
+        return
 
     def mut(d):
         d["defaultProvider"] = env["PI_PROVIDER"]
