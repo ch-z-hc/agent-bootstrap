@@ -86,13 +86,18 @@ def check_env(env, quiet=False):
     return missing
 
 
+UA = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+
+
 def fetch_models(base_url, api_key, timeout=10):
     """GET <base>/models (tries with/without /v1). Returns [ids] or []."""
     base = (base_url or "").rstrip("/")
     candidates = [base + "/models"] if base.endswith("/v1") else [base + "/v1/models", base + "/models"]
     for url in candidates:
         try:
-            req = urllib.request.Request(url, headers={"Authorization": f"Bearer {api_key}"})
+            heads = dict(UA)
+            heads["Authorization"] = f"Bearer {api_key}"
+            req = urllib.request.Request(url, headers=heads)
             with urllib.request.urlopen(req, timeout=timeout) as r:
                 data = json.loads(r.read().decode("utf-8"))
             items = data.get("data") if isinstance(data, dict) else data
@@ -476,6 +481,66 @@ def cmd_setup(args):
         print(f"  {flag} {name}: {path}")
 
 
+def post_json(url, headers, payload, timeout=30):
+    data = json.dumps(payload).encode()
+    heads = {"Content-Type": "application/json"}
+    heads.update(UA)
+    heads.update(headers)
+    try:
+        req = urllib.request.Request(url, data=data, headers=heads)
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return True, json.loads(r.read().decode("utf-8"))
+    except Exception as e:
+        return False, str(e)[:200]
+
+
+def snippet(res):
+    try:
+        ch = res.get("choices", [{}])[0]
+        msg = ch.get("message", {}).get("content")
+        if msg:
+            return str(msg).strip().replace("\n", " ")[:80]
+        txt = res.get("content", [{}])[0].get("text", "")
+        return str(txt).strip().replace("\n", " ")[:80]
+    except Exception:
+        return ""
+
+
+def cmd_verify(args):
+    env = load_vendors(args.config)
+    if check_env(env):
+        return
+    print("[verify] live tests (max_tokens=5 each):")
+    tests = [
+        ("gpt proxy (codex path)", env["GPT_BASE_URL"].rstrip("/") + "/v1/chat/completions",
+         {"Authorization": f"Bearer {env['GPT_API_KEY']}"},
+         {"model": env["GPT_MODEL"], "messages": [{"role": "user", "content": "ping"}], "max_tokens": 5}),
+        ("opencode openai (pi/zcode path)", env["OPENCODE_BASE_URL"].rstrip("/") + "/chat/completions",
+         {"Authorization": f"Bearer {env['OPENCODE_API_KEY']}"},
+         {"model": env["CLAUDE_MODEL"], "messages": [{"role": "user", "content": "ping"}], "max_tokens": 5}),
+        ("opencode anthropic (claude path)", OPENCODE_ROOT + "/v1/messages",
+         {"x-api-key": env["OPENCODE_API_KEY"], "anthropic-version": "2023-06-01"},
+         {"model": env["CLAUDE_MODEL"], "max_tokens": 5,
+          "messages": [{"role": "user", "content": "ping"}]}),
+    ]
+    allok = True
+    for label, url, heads, payload in tests:
+        ok, res = post_json(url, heads, payload)
+        allok = allok and ok
+        print(f"  {'OK ' if ok else 'FAIL'} {label}" + (f" -> {snippet(res)}" if ok else f": {res}"))
+    print("[verify] agent files:")
+    checks = [
+        ("claude", HOME / ".claude" / "settings.json"),
+        ("codex", HOME / ".codex" / "config.toml"),
+        ("pi", HOME / ".pi" / "agent" / "settings.json"),
+        ("zcode", HOME / ".zcode" / "v2" / "config.json"),
+        ("dsh", HOME / ".dsh" / "settings.yaml"),
+    ]
+    for name, path in checks:
+        print(f"  {'found' if path.exists() else 'not installed':<14} {name}: {path}")
+    print("[verify] ALL OK" if allok else "[verify] SOME FAILED -- fix vendors.yaml / network, rerun")
+
+
 def cmd_check(args):
     env = load_vendors(args.config)
     print(f"[check] {args.config} ({'found' if Path(args.config).exists() else 'NOT FOUND'})")
@@ -504,13 +569,16 @@ def main():
     s.add_argument("--no-probe", action="store_true")
     e = sub.add_parser("export", help="generate vendors.yaml from this PC")
     e.add_argument("--force", action="store_true")
-    c = sub.add_parser("check", help="verify env + connectivity")
+    c = sub.add_parser("check", help="verify vendors.yaml + /models probe")
     c.add_argument("--no-probe", action="store_true")
+    sub.add_parser("verify", help="live ping each provider (max_tokens=5)")
     args = ap.parse_args()
     if args.cmd == "export":
         cmd_export(args)
     elif args.cmd == "check":
         cmd_check(args)
+    elif args.cmd == "verify":
+        cmd_verify(args)
     else:
         cmd_setup(args)
 
