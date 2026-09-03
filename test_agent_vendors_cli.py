@@ -68,6 +68,15 @@ class AgentVendorsCliTests(unittest.TestCase):
         self.assertNotIn("DeepSeek", output.getvalue())
         self.assertNotIn("OpenRouter", output.getvalue())
 
+    def test_provider_context_explains_builtin_entries(self):
+        data = {"providers": {"gpt": {"displayName": "GPT Proxy"}}}
+        answers = iter(["", "https://gateway.example/v1", ""])
+        with mock.patch("sys.stdout", new_callable=io.StringIO) as output:
+            cli.choose_provider_settings(data, "gpt", input_fn=lambda _: next(answers))
+        text = output.getvalue()
+        self.assertIn("GPT Proxy（gpt）", text)
+        self.assertIn("Codex", text)
+
     def test_vendor_preset_matches_provider_id(self):
         result = cli.choose_provider_settings({}, "deepseek", input_fn=lambda _: "1")
         self.assertEqual(result["baseURL"], "https://api.deepseek.com")

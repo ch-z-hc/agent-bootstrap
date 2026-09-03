@@ -282,6 +282,11 @@ VENDOR_BASE_URL_PRESETS = {
     "siliconflow": (("SiliconFlow", "https://api.siliconflow.cn/v1", "openai-completions"),),
 }
 
+PROVIDER_ROLES = {
+    "gpt": "Codex 的默认入口（GPT 或自建兼容网关）",
+    "opencode-go": "Claude Code、Pi、ZCode 和 DSH 的共享入口",
+}
+
 PATH_LABELS = {
     "claude_settings": "Claude Code settings.json",
     "codex_config": "Codex config.toml",
@@ -376,6 +381,30 @@ def provider_ids(data: dict) -> list[str]:
     return [str(pid) for pid in providers]
 
 
+def provider_usage(data: dict, provider_id: str) -> list[str]:
+    """Return agent names that currently reference a provider."""
+    used_by = []
+    for name, agent in (data.get("agents") or {}).items():
+        if not isinstance(agent, dict):
+            continue
+        refs = {agent.get("provider"), agent.get("defaultProvider")}
+        listed = agent.get("providers")
+        if isinstance(listed, list):
+            refs.update(listed)
+        elif isinstance(listed, dict):
+            refs.update(listed)
+        if provider_id in refs:
+            used_by.append(str(name))
+    return used_by
+
+
+def provider_label(data: dict, provider_id: str) -> str:
+    provider = ((data.get("providers") or {}).get(provider_id) or {})
+    if isinstance(provider, dict) and provider.get("displayName"):
+        return str(provider["displayName"])
+    return {"gpt": "GPT 兼容网关", "opencode-go": "OpenCode Go"}.get(provider_id, provider_id)
+
+
 def choose_index(prompt: str, count: int, input_fn=input, default: int = 1) -> int:
     """Read a menu index with ccswitch-style retry instead of a traceback."""
     while True:
@@ -415,7 +444,10 @@ def choose_provider_settings(data: dict, provider_id: str, input_fn=input) -> di
         presets.append(("自定义", "", current_api or "openai-completions"))
     else:
         presets.append(("自定义", "", current_api or "openai-completions"))
-    ui_section(f"{provider_id} provider 设置")
+    label = provider_label(data, provider_id)
+    role = PROVIDER_ROLES.get(provider_id, "自定义 provider")
+    ui_section(f"{label}（{provider_id}）")
+    print(paint(f"用途：{role}", "dim"))
     for i, (name, url, api) in enumerate(presets, 1):
         suffix = f" — {url}" if url else ""
         print(f"  {i:>2}. {name}{suffix}")
@@ -665,6 +697,13 @@ def main() -> int:
     try:
         data = load_config()
         pids = provider_ids(data)
+        ui_header("Agent Vendors", "配置向导")
+        ui_section("Provider 概览")
+        for pid in pids:
+            usage = provider_usage(data, pid)
+            users = "、".join(usage) if usage else "暂无 agent"
+            print(f"  {provider_label(data, pid)}（{pid}）")
+            print(f"       用途：{PROVIDER_ROLES.get(pid, '自定义 provider')}；使用中：{users}")
         paths = choose_paths(data)
         provider_settings = {pid: choose_provider_settings(data, pid) for pid in pids}
         keys = {pid: ask_key(pid) for pid in pids}
@@ -682,7 +721,7 @@ def main() -> int:
     except (OSError, ValueError, yaml.YAMLError) as exc:
         ui_error(f"配置失败：{exc}")
         return 2
-    ui_header("Agent Vendors", "配置向导")
+    ui_header("配置预览", "请确认以下变更")
     ui_section("变更预览")
     print("将更新 provider：" + ", ".join(pids))
     for pid in pids:

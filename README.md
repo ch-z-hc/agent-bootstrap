@@ -46,7 +46,7 @@ python "$HOME\.agents\agent_vendors.py" sync
 python "$HOME\.agents\agent_vendors.py" init
 ```
 
-运行 CLI 配置向导：
+运行 CLI 配置向导。启动后会先显示 `Provider 概览`，说明每个 provider 的用途和当前使用它的 agent：
 
 ```powershell
 python "$HOME\.agents\agent_vendors_cli.py"
