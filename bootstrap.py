@@ -30,6 +30,10 @@ try:
 except ImportError:
     yaml = None
 
+
+class ConfigError(ValueError):
+    """A user-facing vendors.yaml error."""
+
 REQUIRED = ("GPT_BASE_URL", "GPT_API_KEY", "OPENCODE_API_KEY")
 DISPLAY = [("GPT_BASE_URL", True), ("GPT_API_KEY", True), ("GPT_MODEL", False),
            ("OPENCODE_API_KEY", True), ("OPENCODE_BASE_URL", False),
@@ -55,27 +59,49 @@ def load_vendors(path):
     """Central vendors.yaml -> flat internal dict. The ONLY source of truth."""
     need_yaml()
     p = Path(path)
-    v = yaml.safe_load(p.read_text(encoding="utf-8")) if p.exists() else {}
+    if not p.exists():
+        v = {}
+    else:
+        try:
+            v = yaml.safe_load(p.read_text(encoding="utf-8"))
+        except (OSError, yaml.YAMLError) as exc:
+            raise ConfigError(f"cannot read {p}: {exc}") from exc
     v = v or {}
-    g = v.get("gpt") or {}
-    o = v.get("opencode") or {}
-    cl = v.get("claude") or {}
-    co = v.get("codex") or {}
-    pi = v.get("pi") or {}
-    dh = v.get("dsh") or {}
+    if not isinstance(v, dict):
+        raise ConfigError(f"{p} must contain a YAML mapping at the top level")
+
+    def section(name):
+        value = v.get(name)
+        if value is None:
+            return {}
+        if not isinstance(value, dict):
+            raise ConfigError(f"{p}: section '{name}' must be a YAML mapping")
+        return value
+
+    def text(section_data, name, default=""):
+        value = section_data.get(name, default)
+        if value is None:
+            return ""
+        if not isinstance(value, str):
+            raise ConfigError(f"{p}: '{name}' must be a string")
+        return value
+
+    g, o = section("gpt"), section("opencode")
+    cl, co = section("claude"), section("codex")
+    pi, dh = section("pi"), section("dsh")
     return {
-        "GPT_BASE_URL": (g.get("base_url") or "").rstrip("/"),
-        "GPT_API_KEY": g.get("api_key") or "",
-        "GPT_MODEL": co.get("model") or g.get("model") or "gpt-5.6-sol",
-        "OPENCODE_API_KEY": o.get("api_key") or "",
-        "OPENCODE_BASE_URL": (o.get("base_url") or OPENCODE_V1).rstrip("/"),
-        "CLAUDE_MODEL": cl.get("model") or "deepseek-v4-flash-vision-exp",
-        "CLAUDE_SONNET": cl.get("sonnet") or cl.get("model") or "deepseek-v4-pro",
-        "CLAUDE_OPUS": cl.get("opus") or cl.get("model") or "glm-5.3-flash",
-        "PI_PROVIDER": pi.get("provider") or "opencode-go-responses",
-        "PI_MODEL": pi.get("model") or "muse-spark-1.3-contributor",
-        "DSH_PROVIDER": dh.get("provider") or "opencode-go",
-        "DSH_MODEL": dh.get("model") or "deepseek-v4-flash-vision-exp",
+        "GPT_BASE_URL": text(g, "base_url").rstrip("/"),
+        "GPT_API_KEY": text(g, "api_key"),
+        "GPT_MODEL": text(co, "model") or text(g, "model") or "gpt-5.6-sol",
+        "OPENCODE_API_KEY": text(o, "api_key"),
+        "OPENCODE_BASE_URL": (text(o, "base_url") or OPENCODE_V1).rstrip("/"),
+        "CLAUDE_MODEL": text(cl, "model") or "deepseek-v4-flash-vision-exp",
+        "CLAUDE_SONNET": text(cl, "sonnet") or text(cl, "model") or "deepseek-v4-pro",
+        "CLAUDE_OPUS": text(cl, "opus") or text(cl, "model") or "glm-5.3-flash",
+        "PI_PROVIDER": text(pi, "provider") or "opencode-go-responses",
+        "PI_MODEL": text(pi, "model") or "muse-spark-1.3-contributor",
+        "DSH_PROVIDER": text(dh, "provider") or "opencode-go",
+        "DSH_MODEL": text(dh, "model") or "deepseek-v4-flash-vision-exp",
     }
 
 
@@ -449,7 +475,7 @@ def cmd_export(args):
     dest = Path(args.config)
     if dest.exists() and not args.force:
         print(f"[export] {dest} exists; use --force to overwrite")
-        return
+        return 2
     data = {
         "gpt": {"base_url": env["GPT_BASE_URL"], "api_key": env["GPT_API_KEY"]},
         "opencode": {"api_key": env["OPENCODE_API_KEY"], "base_url": env["OPENCODE_BASE_URL"]},
@@ -458,17 +484,18 @@ def cmd_export(args):
         "pi": {"provider": env["PI_PROVIDER"], "model": env["PI_MODEL"]},
         "dsh": {"provider": env["DSH_PROVIDER"], "model": env["DSH_MODEL"]},
     }
-    dest.write_text("# agent-bootstrap: single source of truth. Edit here, run: py bootstrap.py\n"
-                    + yaml.safe_dump(data, allow_unicode=True, sort_keys=False), encoding="utf-8")
+    write_text(dest, "# agent-bootstrap: single source of truth. Edit here, run: py bootstrap.py\n"
+               + yaml.safe_dump(data, allow_unicode=True, sort_keys=False))
     print(f"[export] wrote {dest}")
     for k, _ in DISPLAY:
         print(f"  {k}={mask(env.get(k))}")
+    return 0
 
 
 def cmd_setup(args):
     env = load_vendors(args.config)
     if check_env(env):
-        return
+        return 2
     only = set(args.only) if args.only else set(AGENTS)
     print(f"[bootstrap] config={args.config} gpt={mask(env['GPT_API_KEY'])}@{env['GPT_BASE_URL']} "
           f"opencode={mask(env['OPENCODE_API_KEY'])} models={env['GPT_MODEL']}/{env['CLAUDE_MODEL']}/{env['PI_MODEL']}")
@@ -493,6 +520,7 @@ def cmd_setup(args):
     for name, path, changed in out:
         flag = "~" if str(changed).startswith("skip") else ("*" if changed else "=")
         print(f"  {flag} {name}: {path}")
+    return 0
 
 
 def post_json(url, headers, payload, timeout=30):
@@ -568,6 +596,7 @@ def cmd_verify(args):
     for name, path in checks:
         print(f"  {'found' if path.exists() else 'not installed':<14} {name}: {path}")
     print("[verify] ALL OK" if allok else "[verify] SOME FAILED -- fix vendors.yaml / network, rerun")
+    return 0 if allok else 1
 
 
 def cmd_check(args):
@@ -577,12 +606,16 @@ def cmd_check(args):
         print(f"  {k}={mask(env.get(k))}{'' if req else ' (optional)'}")
     if check_env(env, quiet=True):
         print("[check] MISSING required fields -- setup would refuse to run")
-        return
+        return 2
+    failed = False
     if not args.no_probe:
         for label, base, key in (("opencode-go", env["OPENCODE_BASE_URL"], env["OPENCODE_API_KEY"]),
                                  ("gpt", env["GPT_BASE_URL"], env["GPT_API_KEY"])):
             ids = fetch_models(base, key)
+            if not ids:
+                failed = True
             print(f"  probe {label}: {'OK ' + str(len(ids)) + ' models' if ids else 'FAILED (url/key?)'}")
+    return 1 if failed else 0
 
 
 def main():
@@ -593,23 +626,32 @@ def main():
     ap.add_argument("--no-probe", action="store_true")
     sub = ap.add_subparsers(dest="cmd")
     s = sub.add_parser("setup", help="write agent configs (default)")
+    s.add_argument("--config", default=argparse.SUPPRESS, help="vendors.yaml path")
     s.add_argument("--dry-run", action="store_true")
     s.add_argument("--only", nargs="*", choices=list(AGENTS), default=None)
     s.add_argument("--no-probe", action="store_true")
     e = sub.add_parser("export", help="generate vendors.yaml from this PC")
+    e.add_argument("--config", default=argparse.SUPPRESS, help="output vendors.yaml path")
     e.add_argument("--force", action="store_true")
     c = sub.add_parser("check", help="verify vendors.yaml + /models probe")
+    c.add_argument("--config", default=argparse.SUPPRESS, help="vendors.yaml path")
     c.add_argument("--no-probe", action="store_true")
-    sub.add_parser("verify", help="live ping each provider (max_tokens=5)")
+    v = sub.add_parser("verify", help="live ping each provider (max_tokens=5)")
+    v.add_argument("--config", default=argparse.SUPPRESS, help="vendors.yaml path")
     args = ap.parse_args()
-    if args.cmd == "export":
-        cmd_export(args)
-    elif args.cmd == "check":
-        cmd_check(args)
-    elif args.cmd == "verify":
-        cmd_verify(args)
-    else:
-        cmd_setup(args)
+    try:
+        if args.cmd == "export":
+            code = cmd_export(args)
+        elif args.cmd == "check":
+            code = cmd_check(args)
+        elif args.cmd == "verify":
+            code = cmd_verify(args)
+        else:
+            code = cmd_setup(args)
+    except ConfigError as exc:
+        print(f"[bootstrap] config error: {exc}", file=sys.stderr)
+        code = 2
+    raise SystemExit(code or 0)
 
 
 if __name__ == "__main__":

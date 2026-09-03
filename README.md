@@ -21,6 +21,8 @@ vim vendors.yaml  # 改 key、地址或某个 agent 的默认模型
 ```
 
 通用参数：`--dry-run` 只预览，`--only claude pi` 只同步指定的，`--no-probe` 跳过在线发现。
+也可以把 `--config PATH` 放在子命令后面，例如 `python3 bootstrap.py check --config ./vendors.yaml`。
+配置缺失、格式错误或在线检查失败时会返回非零退出码，便于脚本和 CI 判断结果。
 
 只配**已安装**的 agent：目标配置文件不存在就跳过，不会凭空新建。各 agent 保持自己的模型（claude / pi / dsh 走 opencode，codex 走 gpt 代理，互不干扰）。只改 provider/key/model 段，主题、hooks、projects 等个人设置不动。model 列表在线时自动刷新，离线沿用已有，绝不写空。Linux 上新建的密钥文件权限为仅自己可读写。
 
