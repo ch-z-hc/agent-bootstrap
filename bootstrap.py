@@ -34,7 +34,8 @@ REQUIRED = ("GPT_BASE_URL", "GPT_API_KEY", "OPENCODE_API_KEY")
 DISPLAY = [("GPT_BASE_URL", True), ("GPT_API_KEY", True), ("GPT_MODEL", False),
            ("OPENCODE_API_KEY", True), ("OPENCODE_BASE_URL", False),
            ("CLAUDE_MODEL", False), ("CLAUDE_SONNET", False), ("CLAUDE_OPUS", False),
-           ("PI_PROVIDER", False), ("PI_MODEL", False)]
+           ("PI_PROVIDER", False), ("PI_MODEL", False),
+           ("DSH_PROVIDER", False), ("DSH_MODEL", False)]
 
 AGENTS = ("claude", "codex", "pi", "zcode", "dsh")
 
@@ -56,8 +57,12 @@ def load_vendors(path):
     p = Path(path)
     v = yaml.safe_load(p.read_text(encoding="utf-8")) if p.exists() else {}
     v = v or {}
-    g, o, a = v.get("gpt") or {}, v.get("opencode") or {}, v.get("agents") or {}
-    cl, co, pi = a.get("claude") or {}, a.get("codex") or {}, a.get("pi") or {}
+    g = v.get("gpt") or {}
+    o = v.get("opencode") or {}
+    cl = v.get("claude") or {}
+    co = v.get("codex") or {}
+    pi = v.get("pi") or {}
+    dh = v.get("dsh") or {}
     return {
         "GPT_BASE_URL": (g.get("base_url") or "").rstrip("/"),
         "GPT_API_KEY": g.get("api_key") or "",
@@ -69,6 +74,8 @@ def load_vendors(path):
         "CLAUDE_OPUS": cl.get("opus") or cl.get("model") or "glm-5.3-flash",
         "PI_PROVIDER": pi.get("provider") or "opencode-go-responses",
         "PI_MODEL": pi.get("model") or "muse-spark-1.3-contributor",
+        "DSH_PROVIDER": dh.get("provider") or "opencode-go",
+        "DSH_MODEL": dh.get("model") or "deepseek-v4-flash-vision-exp",
     }
 
 
@@ -312,7 +319,7 @@ def setup_zcode(env, dry_run, out):
         save_json(p, json.loads(new))
 
 
-def setup_dsh(env, dry_run, out):
+def setup_dsh(env, dry_run, out, discovered_oc, discovered_gpt):
     try:
         import yaml
     except ImportError:
@@ -328,9 +335,16 @@ def setup_dsh(env, dry_run, out):
     def rows(models):
         return [{"id": m, "name": m} for m in models]
 
-    oc_models = rows(fetch_models(env["OPENCODE_BASE_URL"], env["OPENCODE_API_KEY"]) or [env["CLAUDE_MODEL"]])
-    gpt_models = rows(fetch_models(env["GPT_BASE_URL"], env["GPT_API_KEY"]) or [env["GPT_MODEL"]])
-    data.setdefault("agent-default-model", {}).update({"provider": "opencode-go", "model": env["CLAUDE_MODEL"]})
+    # 无探测结果时沿用文件里已有的清单，绝不写成单个模型
+    keep = ((data.get("llm-pi-ai") or {}).get("providers") or {})
+
+    def keep_ids(name, fallback):
+        ids = [m.get("id") for m in (keep.get(name) or {}).get("models", []) or [] if isinstance(m, dict)]
+        return ids or [fallback]
+
+    oc_models = rows(discovered_oc or keep_ids("opencode-go", env["DSH_MODEL"]))
+    gpt_models = rows(discovered_gpt or keep_ids("gpt", env["GPT_MODEL"]))
+    data.setdefault("agent-default-model", {}).update({"provider": env["DSH_PROVIDER"], "model": env["DSH_MODEL"]})
     llm = data.setdefault("llm-pi-ai", {}).setdefault("providers", {})
     llm["gpt"] = {"displayName": "GPT Proxy", "apiKeyEnv": "GPT_API_KEY", "api": "openai-responses",
                   "baseURL": env["GPT_BASE_URL"].rstrip("/"), "models": gpt_models}
@@ -362,6 +376,7 @@ def read_json(path):
 
 
 def cmd_export(args):
+    need_yaml()
     env = {}
     cl = read_json(HOME / ".claude" / "settings.json").get("env", {})
     env["OPENCODE_API_KEY"] = cl.get("ANTHROPIC_AUTH_TOKEN") or cl.get("ANTHROPIC_API_KEY") or ""
@@ -384,6 +399,13 @@ def cmd_export(args):
     env["OPENCODE_BASE_URL"] = ((pi_m.get("opencode-go") or {}).get("baseUrl") or OPENCODE_V1).rstrip("/")
     if not env["OPENCODE_API_KEY"]:
         env["OPENCODE_API_KEY"] = (pi_m.get("opencode-go") or {}).get("apiKey") or ""
+    try:
+        dh = (yaml.safe_load((HOME / ".dsh" / "settings.yaml").read_text(encoding="utf-8")) or {})
+        dh = dh.get("agent-default-model", {}) or {}
+    except Exception:
+        dh = {}
+    env["DSH_PROVIDER"] = dh.get("provider") or "opencode-go"
+    env["DSH_MODEL"] = dh.get("model") or "deepseek-v4-flash-vision-exp"
     dest = Path(args.config)
     if dest.exists() and not args.force:
         print(f"[export] {dest} exists; use --force to overwrite")
@@ -391,11 +413,10 @@ def cmd_export(args):
     data = {
         "gpt": {"base_url": env["GPT_BASE_URL"], "api_key": env["GPT_API_KEY"]},
         "opencode": {"api_key": env["OPENCODE_API_KEY"], "base_url": env["OPENCODE_BASE_URL"]},
-        "agents": {
-            "claude": {"model": env["CLAUDE_MODEL"], "sonnet": env["CLAUDE_SONNET"], "opus": env["CLAUDE_OPUS"]},
-            "codex": {"model": env["GPT_MODEL"]},
-            "pi": {"provider": env["PI_PROVIDER"], "model": env["PI_MODEL"]},
-        },
+        "codex": {"model": env["GPT_MODEL"]},
+        "claude": {"model": env["CLAUDE_MODEL"], "sonnet": env["CLAUDE_SONNET"], "opus": env["CLAUDE_OPUS"]},
+        "pi": {"provider": env["PI_PROVIDER"], "model": env["PI_MODEL"]},
+        "dsh": {"provider": env["DSH_PROVIDER"], "model": env["DSH_MODEL"]},
     }
     dest.write_text("# agent-bootstrap: single source of truth. Edit here, run: py bootstrap.py\n"
                     + yaml.safe_dump(data, allow_unicode=True, sort_keys=False), encoding="utf-8")
@@ -426,7 +447,7 @@ def cmd_setup(args):
     if "zcode" in only:
         setup_zcode(env, args.dry_run, out)
     if "dsh" in only:
-        setup_dsh(env, args.dry_run, out)
+        setup_dsh(env, args.dry_run, out, doc, dgpt)
     print("[bootstrap] DRY-RUN -- nothing written" if args.dry_run else "[bootstrap] done:")
     for name, path, changed in out:
         flag = "~" if str(changed).startswith("skip") else ("*" if changed else "=")
