@@ -265,7 +265,7 @@ def pi_models_payload(env, discovered_oc, discovered_gpt):
         if not models:
             old = (keep.get(name) or {}).get("models") or []
             models = [m.get("id") for m in old if isinstance(m, dict) and m.get("id")]
-        return {"name": (keep.get(name) or {}).get("name") or p.get("displayName") or name,
+        return {"name": (keep.get(name) or {}).get("name") or name,
                 "baseUrl": base, "apiKey": key, "api": api,
                 "models": [{"id": m, "name": m} for m in models]}
 
