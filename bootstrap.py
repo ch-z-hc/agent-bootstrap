@@ -281,6 +281,8 @@ def pi_models_payload(env, discovered_oc, discovered_gpt):
     resp_models = [m.get("id") for m in (keep.get("opencode-go-responses") or {}).get("models", []) if isinstance(m, dict)]
     if not resp_models:
         resp_models = [m for m in oc_models if "muse-spark" in m] or oc_models[:2]
+    if env["PI_MODEL"] not in resp_models:
+        resp_models = [env["PI_MODEL"]] + resp_models
     return {
         "opencode-go": entry("opencode-go", oc_base, "openai-completions", env["OPENCODE_API_KEY"], oc_models),
         "gpt": entry("gpt", gpt_base, "openai-responses", env["GPT_API_KEY"], gpt_models),
@@ -369,8 +371,14 @@ def setup_dsh(env, dry_run, out, discovered_oc, discovered_gpt):
         ids = [m.get("id") for m in (keep.get(name) or {}).get("models", []) or [] if isinstance(m, dict)]
         return ids or [fallback]
 
-    oc_models = rows(discovered_oc or keep_ids("opencode-go", env["DSH_MODEL"]))
-    gpt_models = rows(discovered_gpt or keep_ids("gpt", env["GPT_MODEL"]))
+    oc_ids = discovered_oc or keep_ids("opencode-go", env["DSH_MODEL"])
+    if env["DSH_MODEL"] not in oc_ids:
+        oc_ids = [env["DSH_MODEL"]] + oc_ids
+    gpt_ids = discovered_gpt or keep_ids("gpt", env["GPT_MODEL"])
+    if env["GPT_MODEL"] not in gpt_ids:
+        gpt_ids = [env["GPT_MODEL"]] + gpt_ids
+    oc_models = rows(oc_ids)
+    gpt_models = rows(gpt_ids)
     data.setdefault("agent-default-model", {}).update({"provider": env["DSH_PROVIDER"], "model": env["DSH_MODEL"]})
     llm = data.setdefault("llm-pi-ai", {}).setdefault("providers", {})
     llm["gpt"] = {"displayName": "GPT Proxy", "apiKeyEnv": "GPT_API_KEY", "api": "openai-responses",
