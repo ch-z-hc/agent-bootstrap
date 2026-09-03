@@ -231,6 +231,9 @@ def setup_claude(env, dry_run, out):
         e["ANTHROPIC_DEFAULT_SONNET_MODEL"] = son
         e["ANTHROPIC_DEFAULT_OPUS_MODEL"] = opu
         e["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] = "1000000"
+        # third-party model ids fail client-side session-title validation
+        # (cosmetic [claude-code:unrecognized_model]); silence it at the source.
+        e["CLAUDE_CODE_DISABLE_TERMINAL_TITLE"] = "1"
         d["model"] = cm
 
     changed, new = patch_json(p, mut)
