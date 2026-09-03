@@ -2,6 +2,7 @@ import unittest
 import io
 import json
 from pathlib import Path
+from unittest import mock
 
 import agent_vendors_cli as cli
 
@@ -60,11 +61,27 @@ class AgentVendorsCliTests(unittest.TestCase):
         result = cli.choose_provider_settings({}, "gpt", input_fn=lambda _: next(answers))
         self.assertEqual(result, {"baseURL": "https://my-gateway.example/v1", "api": "openai-completions"})
 
-    def test_common_vendor_preset_is_available(self):
-        # Common presets are offered for the generic GPT gateway; OpenCode Go
-        # keeps only endpoints known to support its dual-protocol use case.
-        result = cli.choose_provider_settings({}, "gpt", input_fn=lambda _: "3")
+    def test_gpt_does_not_offer_foreign_vendor_presets(self):
+        answers = iter(["", "https://gateway.example/v1", ""])
+        with mock.patch("sys.stdout", new_callable=io.StringIO) as output:
+            cli.choose_provider_settings({}, "gpt", input_fn=lambda _: next(answers))
+        self.assertNotIn("DeepSeek", output.getvalue())
+        self.assertNotIn("OpenRouter", output.getvalue())
+
+    def test_vendor_preset_matches_provider_id(self):
+        result = cli.choose_provider_settings({}, "deepseek", input_fn=lambda _: "1")
         self.assertEqual(result["baseURL"], "https://api.deepseek.com")
+
+    def test_model_catalog_stays_scoped_to_provider(self):
+        data = {
+            "providers": {
+                "gpt": {"models": {"gpt-5.5": {"name": "GPT 5.5"}}},
+                "deepseek": {"models": {"deepseek-chat": {"name": "DeepSeek Chat"}}},
+            }
+        }
+        catalog = cli.model_catalog(data, "gpt")
+        self.assertIn("gpt-5.5", catalog)
+        self.assertNotIn("deepseek-chat", catalog)
 
     def test_provider_add_creates_custom_provider(self):
         data = {"providers": {}}

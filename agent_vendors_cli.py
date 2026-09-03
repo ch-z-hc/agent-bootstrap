@@ -273,15 +273,14 @@ MODEL_EXTRAS = {
     },
 }
 
-# A short, provider-neutral list.  ``gpt`` is commonly a private gateway in
-# this project, so it deliberately starts with the custom entry below rather
-# than suggesting that it means OpenAI's hosted service.
-COMMON_BASE_URL_PRESETS = (
-    ("OpenAI 官方", "https://api.openai.com/v1", "openai-completions"),
-    ("DeepSeek 官方", "https://api.deepseek.com", "openai-completions"),
-    ("OpenRouter", "https://openrouter.ai/api/v1", "openai-completions"),
-    ("SiliconFlow", "https://api.siliconflow.cn/v1", "openai-completions"),
-)
+# Presets are keyed by provider ID.  A generic ``gpt`` provider is commonly a
+# private gateway, so it must not offer a DeepSeek (or another vendor) URL.
+VENDOR_BASE_URL_PRESETS = {
+    "openai": (("OpenAI 官方", "https://api.openai.com/v1", "openai-completions"),),
+    "deepseek": (("DeepSeek 官方", "https://api.deepseek.com", "openai-completions"),),
+    "openrouter": (("OpenRouter", "https://openrouter.ai/api/v1", "openai-completions"),),
+    "siliconflow": (("SiliconFlow", "https://api.siliconflow.cn/v1", "openai-completions"),),
+}
 
 PATH_LABELS = {
     "claude_settings": "Claude Code settings.json",
@@ -408,9 +407,11 @@ def choose_provider_settings(data: dict, provider_id: str, input_fn=input) -> di
     if provider_id == "gpt":
         # A GPT provider in this project is normally a user-supplied proxy.
         presets.append(("自定义", "", current_api or "openai-completions"))
-        presets.extend(COMMON_BASE_URL_PRESETS)
     elif provider_id == "opencode-go":
         presets.append(("OpenCode Go 官方", "https://opencode.ai/zen/go/v1", "openai-completions"))
+        presets.append(("自定义", "", current_api or "openai-completions"))
+    elif provider_id in VENDOR_BASE_URL_PRESETS:
+        presets.extend(VENDOR_BASE_URL_PRESETS[provider_id])
         presets.append(("自定义", "", current_api or "openai-completions"))
     else:
         presets.append(("自定义", "", current_api or "openai-completions"))
