@@ -5,7 +5,7 @@ Old PC:  py bootstrap.py export     -> writes vendors.yaml (keys + urls + models
 New PC:  copy this folder over, then:  py bootstrap.py
          (add --dry-run to preview, --only claude,codex to limit scope)
 
-Only stdlib is used. DSH sync additionally needs pyyaml (skipped with a hint otherwise).
+Requires the pyyaml package for reading vendors.yaml and syncing YAML-based agents.
 """
 from __future__ import annotations
 
