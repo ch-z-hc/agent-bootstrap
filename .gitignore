@@ -1,12 +1,2 @@
+bootstrap.env
 __pycache__/
-*.py[cod]
-.venv/
-*.log
-agent-vendors.yaml
-agent-vendors.yaml.*
-*.credentials.yaml
-*.credentials.yaml.*
-*.tmp
-.pytest_cache/
-.env
-.DS_Store
