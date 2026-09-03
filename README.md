@@ -1,34 +1,33 @@
 # agent-bootstrap
 
-新电脑一条命令配好所有 coding agent。只需要 3 个值：`GPT_BASE_URL`、`GPT_API_KEY`、`OPENCODE_API_KEY`。
+一个文件夹管住所有 coding agent。改 `vendors.yaml`，一条命令同步到 claude / codex / pi / zcode / dsh。
 
-## 换电脑流程（两步）
+## 维护单元（就这两样）
 
-旧电脑导出：
+- `bootstrap.py` — 同步脚本，只用标准库 + pyyaml
+- `vendors.yaml` — 全局唯一真相（密钥在里面，已 gitignore）
+
+整个文件夹拷到新电脑就能用，不用软链接（codex 的 `[projects.*]` 本机路径、原子重写断链等问题让软链接不可靠）。
+
+## 日常：改一处，全跟着变
 
 ```powershell
-py bootstrap.py export
+notepad vendors.yaml     # 改 key、地址或默认模型
+py bootstrap.py          # 同步全部 agent
+py bootstrap.py --dry-run        # 只预览
+py bootstrap.py --only claude pi # 只同步指定的
 ```
 
-把生成的 `bootstrap.env` 拷到新电脑，再运行：
+同步是补丁式的：只改各文件的 provider/key/model 段，主题、hooks、projects、packages 等个人设置不动。model 列表优先调 `/models` 实时发现，失败沿用本机已有。
+
+## 换电脑：两步
 
 ```powershell
+# 旧电脑：从本机现有配置反向生成 vendors.yaml
+py bootstrap.py export
+
+# 把整个文件夹拷到新电脑，运行
 py bootstrap.py
 ```
 
-## 命令
-
-| 命令 | 说明 |
-|---|---|
-| `py bootstrap.py` | 写入全部 agent 配置（默认） |
-| `py bootstrap.py --dry-run` | 只预览，不写入 |
-| `py bootstrap.py --only claude codex` | 只配指定的 agent |
-| `py bootstrap.py --no-probe` | 跳过 `/models` 自动发现（离线用） |
-| `py bootstrap.py check` | 检查 env + 连通性（key 只显示掩码） |
-| `py bootstrap.py export [--force]` | 从本机反向生成 `bootstrap.env` |
-
-覆盖 5 个 agent：claude（`~/.claude/settings.json` 的 env 段）、codex（`~/.codex/config.toml`）、pi（settings + models）、zcode（只改 4 个自有 provider，`builtin:*` 不动）、dsh（需 `pip install pyyaml`，否则自动跳过）。
-
-只改配置，不管主题、hooks、projects 等其他个人设置。model 列表优先用 `/models` 接口实时发现，失败时沿用本机已有列表。
-
-`bootstrap.env` 含密钥，已加入 `.gitignore`，不要提交。
+其他命令：`check` 验配置 + 连通性（key 打掩码），`--no-probe` 跳过在线发现，`--config PATH` 指定 yaml 位置。

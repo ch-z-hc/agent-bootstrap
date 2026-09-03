@@ -1,0 +1,23 @@
+# vendors.yaml -- agent-bootstrap 的全局唯一真相。
+# 改这里，然后运行 py bootstrap.py，所有 agent 配置跟着变。
+# 完整维护单元就是这一个文件夹：bootstrap.py + vendors.yaml，拷到新电脑即用。
+
+gpt:
+  base_url: http://your-proxy:8081
+  api_key: sk-xxxx
+
+opencode:
+  api_key: sk-xxxx
+  # base_url 一般不用改：
+  # base_url: https://opencode.ai/zen/go/v1
+
+agents:
+  claude:
+    model: deepseek-v4-flash-vision-exp
+    sonnet: deepseek-v4-pro
+    opus: glm-5.3-flash
+  codex:
+    model: gpt-5.6-sol
+  pi:
+    provider: opencode-go-responses
+    model: muse-spark-1.3-contributor

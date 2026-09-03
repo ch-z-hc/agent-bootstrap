@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """agent-bootstrap: give a new PC your agents config in one command.
 
-Old PC:  py bootstrap.py export     -> writes bootstrap.env (keys + urls + models)
-New PC:  copy bootstrap.env over, then:  py bootstrap.py
+Old PC:  py bootstrap.py export     -> writes vendors.yaml (keys + urls + models)
+New PC:  copy this folder over, then:  py bootstrap.py
          (add --dry-run to preview, --only claude,codex to limit scope)
 
 Only stdlib is used. DSH sync additionally needs pyyaml (skipped with a hint otherwise).
@@ -20,25 +20,21 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 HOME = Path(os.environ.get("AGENT_HOME") or Path.home())
-ENV_DEFAULT = HERE / "bootstrap.env"
+CONFIG_DEFAULT = HERE / "vendors.yaml"
 
 OPENCODE_ROOT = "https://opencode.ai/zen/go"
 OPENCODE_V1 = OPENCODE_ROOT + "/v1"
 
-# (key in bootstrap.env, default)
-FIELDS = [
-    ("GPT_BASE_URL", ""),
-    ("GPT_API_KEY", ""),
-    ("GPT_MODEL", "gpt-5.6-sol"),
-    ("OPENCODE_API_KEY", ""),
-    ("OPENCODE_BASE_URL", OPENCODE_V1),
-    ("CLAUDE_MODEL", "deepseek-v4-flash-vision-exp"),
-    ("CLAUDE_SONNET", "deepseek-v4-pro"),
-    ("CLAUDE_OPUS", "glm-5.3-flash"),
-    ("PI_PROVIDER", "opencode-go-responses"),
-    ("PI_MODEL", "muse-spark-1.3-contributor"),
-]
+try:
+    import yaml
+except ImportError:
+    yaml = None
+
 REQUIRED = ("GPT_BASE_URL", "GPT_API_KEY", "OPENCODE_API_KEY")
+DISPLAY = [("GPT_BASE_URL", True), ("GPT_API_KEY", True), ("GPT_MODEL", False),
+           ("OPENCODE_API_KEY", True), ("OPENCODE_BASE_URL", False),
+           ("CLAUDE_MODEL", False), ("CLAUDE_SONNET", False), ("CLAUDE_OPUS", False),
+           ("PI_PROVIDER", False), ("PI_MODEL", False)]
 
 AGENTS = ("claude", "codex", "pi", "zcode", "dsh")
 
@@ -48,17 +44,32 @@ def mask(s):
     return f"{s[:3]}...{s[-3:]}" if len(s) > 10 else ("<empty>" if not s else "<secret>")
 
 
-def load_env(path):
-    env = {}
-    if Path(path).exists():
-        for line in Path(path).read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if line and not line.startswith("#") and "=" in line:
-                k, v = line.split("=", 1)
-                env[k.strip()] = v.strip().strip('"').strip("'")
-    for k, d in FIELDS:
-        env.setdefault(k, d)
-    return env
+def need_yaml():
+    if yaml is None:
+        print("[bootstrap] need pyyaml: py -m pip install pyyaml")
+        sys.exit(2)
+
+
+def load_vendors(path):
+    """Central vendors.yaml -> flat internal dict. The ONLY source of truth."""
+    need_yaml()
+    p = Path(path)
+    v = yaml.safe_load(p.read_text(encoding="utf-8")) if p.exists() else {}
+    v = v or {}
+    g, o, a = v.get("gpt") or {}, v.get("opencode") or {}, v.get("agents") or {}
+    cl, co, pi = a.get("claude") or {}, a.get("codex") or {}, a.get("pi") or {}
+    return {
+        "GPT_BASE_URL": (g.get("base_url") or "").rstrip("/"),
+        "GPT_API_KEY": g.get("api_key") or "",
+        "GPT_MODEL": co.get("model") or g.get("model") or "gpt-5.6-sol",
+        "OPENCODE_API_KEY": o.get("api_key") or "",
+        "OPENCODE_BASE_URL": (o.get("base_url") or OPENCODE_V1).rstrip("/"),
+        "CLAUDE_MODEL": cl.get("model") or "deepseek-v4-flash-vision-exp",
+        "CLAUDE_SONNET": cl.get("sonnet") or cl.get("model") or "deepseek-v4-pro",
+        "CLAUDE_OPUS": cl.get("opus") or cl.get("model") or "glm-5.3-flash",
+        "PI_PROVIDER": pi.get("provider") or "opencode-go-responses",
+        "PI_MODEL": pi.get("model") or "muse-spark-1.3-contributor",
+    }
 
 
 def check_env(env, quiet=False):
@@ -144,6 +155,7 @@ def patch_toml(path, updates, nested_prefix="model_providers."):
             bounds.setdefault(cur, len(lines))
     bounds[cur] = len(lines)
     insert_at = {}
+    new_sections = []
     for sec, kv in updates.items():
         missing = [(k, v) for k, v in kv.items() if k not in found[sec]]
         if not missing:
@@ -154,12 +166,13 @@ def patch_toml(path, updates, nested_prefix="model_providers."):
         elif sec in bounds:
             insert_at.setdefault(bounds[sec], []).extend(f"{k} = {toml_str(v)}" for k, v in missing)
         else:
-            lines.append("")
-            lines.append(f"[{nested_prefix}{sec}]")
-            lines.extend(f"{k} = {toml_str(v)}" for k, v in missing)
-            return True, "\n".join(lines) + "\n"
+            new_sections.append(f"[{nested_prefix}{sec}]")
+            new_sections.extend(f"{k} = {toml_str(v)}" for k, v in missing)
     for idx in sorted(insert_at, reverse=True):
         lines[idx:idx] = insert_at[idx]
+    if new_sections:
+        lines.append("")
+        lines.extend(new_sections)
     return True, "\n".join(lines) + "\n" if lines else ""
 
 
@@ -371,25 +384,32 @@ def cmd_export(args):
     env["OPENCODE_BASE_URL"] = ((pi_m.get("opencode-go") or {}).get("baseUrl") or OPENCODE_V1).rstrip("/")
     if not env["OPENCODE_API_KEY"]:
         env["OPENCODE_API_KEY"] = (pi_m.get("opencode-go") or {}).get("apiKey") or ""
-    dest = Path(args.env)
+    dest = Path(args.config)
     if dest.exists() and not args.force:
         print(f"[export] {dest} exists; use --force to overwrite")
         return
-    lines = ["# agent-bootstrap: copy to new PC as bootstrap.env, then: py bootstrap.py", ""]
-    for k, d in FIELDS:
-        lines.append(f"{k}={env.get(k) or d}")
-    dest.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    data = {
+        "gpt": {"base_url": env["GPT_BASE_URL"], "api_key": env["GPT_API_KEY"]},
+        "opencode": {"api_key": env["OPENCODE_API_KEY"], "base_url": env["OPENCODE_BASE_URL"]},
+        "agents": {
+            "claude": {"model": env["CLAUDE_MODEL"], "sonnet": env["CLAUDE_SONNET"], "opus": env["CLAUDE_OPUS"]},
+            "codex": {"model": env["GPT_MODEL"]},
+            "pi": {"provider": env["PI_PROVIDER"], "model": env["PI_MODEL"]},
+        },
+    }
+    dest.write_text("# agent-bootstrap: single source of truth. Edit here, run: py bootstrap.py\n"
+                    + yaml.safe_dump(data, allow_unicode=True, sort_keys=False), encoding="utf-8")
     print(f"[export] wrote {dest}")
-    for k, _ in FIELDS:
+    for k, _ in DISPLAY:
         print(f"  {k}={mask(env.get(k))}")
 
 
 def cmd_setup(args):
-    env = load_env(args.env)
+    env = load_vendors(args.config)
     if check_env(env):
         return
     only = set(args.only) if args.only else set(AGENTS)
-    print(f"[bootstrap] gpt={mask(env['GPT_API_KEY'])}@{env['GPT_BASE_URL']} "
+    print(f"[bootstrap] config={args.config} gpt={mask(env['GPT_API_KEY'])}@{env['GPT_BASE_URL']} "
           f"opencode={mask(env['OPENCODE_API_KEY'])} models={env['GPT_MODEL']}/{env['CLAUDE_MODEL']}/{env['PI_MODEL']}")
     doc, dgpt = [], []
     if not args.no_probe:
@@ -414,10 +434,10 @@ def cmd_setup(args):
 
 
 def cmd_check(args):
-    env = load_env(args.env)
-    print(f"[check] {args.env} ({'found' if Path(args.env).exists() else 'NOT FOUND'})")
-    for k, _ in FIELDS:
-        print(f"  {k}={mask(env.get(k))}{'' if k in REQUIRED else ' (optional)'}")
+    env = load_vendors(args.config)
+    print(f"[check] {args.config} ({'found' if Path(args.config).exists() else 'NOT FOUND'})")
+    for k, req in DISPLAY:
+        print(f"  {k}={mask(env.get(k))}{'' if req else ' (optional)'}")
     if check_env(env, quiet=True):
         print("[check] MISSING required fields -- setup would refuse to run")
         return
@@ -430,7 +450,7 @@ def cmd_check(args):
 
 def main():
     ap = argparse.ArgumentParser(description="agent-bootstrap: one-command agent setup for a new PC")
-    ap.add_argument("--env", default=str(ENV_DEFAULT))
+    ap.add_argument("--config", default=str(CONFIG_DEFAULT), help="vendors.yaml path (default: next to script)")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--only", nargs="*", choices=list(AGENTS), default=None)
     ap.add_argument("--no-probe", action="store_true")
@@ -439,7 +459,7 @@ def main():
     s.add_argument("--dry-run", action="store_true")
     s.add_argument("--only", nargs="*", choices=list(AGENTS), default=None)
     s.add_argument("--no-probe", action="store_true")
-    e = sub.add_parser("export", help="generate bootstrap.env from this PC")
+    e = sub.add_parser("export", help="generate vendors.yaml from this PC")
     e.add_argument("--force", action="store_true")
     c = sub.add_parser("check", help="verify env + connectivity")
     c.add_argument("--no-probe", action="store_true")
