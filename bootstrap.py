@@ -221,8 +221,10 @@ def setup_claude(env, dry_run, out):
 
     def mut(d):
         e = d.setdefault("env", {})
-        e["ANTHROPIC_AUTH_TOKEN"] = env["OPENCODE_API_KEY"]
-        e.pop("ANTHROPIC_API_KEY", None)
+        # gateway only accepts x-api-key; ANTHROPIC_API_KEY is sent as x-api-key,
+        # while ANTHROPIC_AUTH_TOKEN would go out as Bearer and 401.
+        e["ANTHROPIC_API_KEY"] = env["OPENCODE_API_KEY"]
+        e.pop("ANTHROPIC_AUTH_TOKEN", None)
         e["ANTHROPIC_BASE_URL"] = root
         e["ANTHROPIC_MODEL"] = cm
         e["ANTHROPIC_DEFAULT_HAIKU_MODEL"] = cm
