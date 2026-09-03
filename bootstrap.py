@@ -471,7 +471,8 @@ def cmd_setup(args):
     if not args.no_probe:
         doc = fetch_models(env["OPENCODE_BASE_URL"], env["OPENCODE_API_KEY"])
         dgpt = fetch_models(env["GPT_BASE_URL"], env["GPT_API_KEY"])
-        print(f"[bootstrap] probe: opencode-go {len(doc)} models, gpt {len(dgpt)} models")
+        print(f"[bootstrap] probe: opencode-go {len(doc)} models, gpt {len(dgpt)} models" +
+              (" (offline? keeping existing lists)" if not doc and not dgpt else ""))
     out = []
     if "claude" in only:
         setup_claude(env, args.dry_run, out)
@@ -536,6 +537,21 @@ def cmd_verify(args):
         ok, res = post_json(url, heads, payload)
         allok = allok and ok
         print(f"  {'OK ' if ok else 'FAIL'} {label}" + (f" -> {snippet(res)}" if ok else f": {res}"))
+    print("[verify] defaults in live catalog:")
+    catalogs = {"gpt": fetch_models(env["GPT_BASE_URL"], env["GPT_API_KEY"]),
+                "opencode-go": fetch_models(env["OPENCODE_BASE_URL"], env["OPENCODE_API_KEY"])}
+    for label, model, cat in (("codex", env["GPT_MODEL"], "gpt"),
+                              ("claude", env["CLAUDE_MODEL"], "opencode-go"),
+                              ("pi", env["PI_MODEL"], "opencode-go"),
+                              ("dsh", env["DSH_MODEL"], "opencode-go")):
+        ids = catalogs[cat]
+        if not ids:
+            print(f"  SKIP {label}: {cat} catalog unreachable")
+            continue
+        okm = model in ids
+        allok = allok and okm
+        print(f"  {'OK ' if okm else 'WARN'} {label} default {model}" +
+              (" in catalog" if okm else " NOT in catalog -- agent may fall back, run sync with probe"))
     print("[verify] agent files:")
     checks = [
         ("claude", HOME / ".claude" / "settings.json"),
