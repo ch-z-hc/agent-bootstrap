@@ -68,6 +68,9 @@ OPENCODE_MODEL_SPECS = {
     "qwen3.7-plus": (1000000, 65536, True, ["text", "image"]),
     "qwen3.8-max": (1000000, 131072, True, ["text", "image"]),
     "muse-spark-1.2-contributor": (1048576, 131072, True, ["text", "image"]),
+    "muse-spark-1.3-contributor": (1048576, 131072, True, ["text", "image"]),
+    "omen-alpha": (500000, 128000, True, ["text", "image"]),
+    "qwen3.8-flash": (1000000, 131072, True, ["text", "image"]),
     "gpt-5.6-luna": (1050000, 128000, True, ["text", "image"]),
     "minimax-m3": (1000000, 131072, True, ["text", "image"]),
     "minimax-m2.7": (204800, 131072, True, ["text"]),
@@ -346,10 +349,15 @@ def pi_models_payload(env, discovered_oc, discovered_gpt):
     gpt_models = discovered_gpt or [m.get("id") for m in (keep.get("gpt") or {}).get("models", []) if isinstance(m, dict)]
     if env["GPT_MODEL"] not in gpt_models:
         gpt_models = [env["GPT_MODEL"]] + gpt_models
+    # default model must live in its own provider, not always in responses.
+    if env["PI_PROVIDER"] == "gpt":
+        if env["PI_MODEL"] not in gpt_models:
+            gpt_models = [env["PI_MODEL"]] + gpt_models
+    elif env["PI_PROVIDER"] != "opencode-go-responses":
+        if env["PI_MODEL"] not in oc_models:
+            oc_models = [env["PI_MODEL"]] + oc_models
     resp_models = [m.get("id") for m in (keep.get("opencode-go-responses") or {}).get("models", []) if isinstance(m, dict)]
-    if not resp_models:
-        resp_models = oc_models[:2]
-    if env["PI_MODEL"] not in resp_models:
+    if env["PI_PROVIDER"] == "opencode-go-responses" and env["PI_MODEL"] not in resp_models:
         resp_models = [env["PI_MODEL"]] + resp_models
     return {
         "opencode-go": entry("opencode-go", oc_base, "openai-completions", env["OPENCODE_API_KEY"], oc_models),
