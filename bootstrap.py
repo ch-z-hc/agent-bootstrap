@@ -43,6 +43,36 @@ DISPLAY = [("GPT_BASE_URL", True), ("GPT_API_KEY", True), ("GPT_MODEL", False),
 
 AGENTS = ("claude", "codex", "pi", "zcode", "dsh")
 
+# Known OpenCode model specs. Without these, pi falls back to a 128k context
+# window and 16k max output, because a bare models.json entry replaces the
+# remote pi.dev catalog metadata. Values mirror the remote catalog.
+OPENCODE_MODEL_SPECS = {
+    "kimi-k3": (1048576, 131072, True, ["text", "image"]),
+    "kimi-k2.7-code": (262144, 262144, True, ["text", "image"]),
+    "kimi-k2.6": (262144, 65536, True, ["text", "image"]),
+    "glm-5.3": (1000000, 131072, True, ["text"]),
+    "glm-5.2": (1000000, 131072, True, ["text"]),
+    "glm-5.1": (202752, 32768, True, ["text"]),
+    "mimo-v2.5-pro": (1048576, 128000, True, ["text"]),
+    "mimo-v2.5": (1000000, 128000, True, ["text", "image"]),
+    "hy3": (256000, 128000, True, ["text"]),
+    "deepseek-v4-pro": (1000000, 384000, True, ["text"]),
+    "deepseek-v4-flash": (1000000, 384000, True, ["text"]),
+    "deepseek-v4-flash-vision-exp": (1000000, 384000, True, ["text", "image"]),
+    "glm-5.3-flash": (1000000, 131072, True, ["text", "image"]),
+    "grok-4.6": (500000, 500000, True, ["text", "image"]),
+    "hy4-preview": (1024000, 64000, True, ["text"]),
+    "longcat-2.0": (1000000, 131072, True, ["text"]),
+    "qwen3.6-plus": (1000000, 65536, True, ["text", "image"]),
+    "qwen3.7-max": (1000000, 65536, True, ["text"]),
+    "qwen3.7-plus": (1000000, 65536, True, ["text", "image"]),
+    "qwen3.8-max": (1000000, 131072, True, ["text", "image"]),
+    "muse-spark-1.2-contributor": (1048576, 131072, True, ["text", "image"]),
+    "gpt-5.6-luna": (1050000, 128000, True, ["text", "image"]),
+    "minimax-m3": (1000000, 131072, True, ["text", "image"]),
+    "minimax-m2.7": (204800, 131072, True, ["text"]),
+}
+
 
 def mask(s):
     s = str(s or "")
@@ -98,8 +128,8 @@ def load_vendors(path):
         "CLAUDE_MODEL": text(cl, "model") or "deepseek-v4-flash-vision-exp",
         "CLAUDE_SONNET": text(cl, "sonnet") or text(cl, "model") or "deepseek-v4-pro",
         "CLAUDE_OPUS": text(cl, "opus") or text(cl, "model") or "glm-5.3-flash",
-        "PI_PROVIDER": text(pi, "provider") or "opencode-go-responses",
-        "PI_MODEL": text(pi, "model") or "muse-spark-1.3-contributor",
+        "PI_PROVIDER": text(pi, "provider") or "opencode-go",
+        "PI_MODEL": text(pi, "model") or "deepseek-v4-flash-vision-exp",
         "DSH_PROVIDER": text(dh, "provider") or "opencode-go",
         "DSH_MODEL": text(dh, "model") or "deepseek-v4-flash-vision-exp",
     }
@@ -301,9 +331,16 @@ def pi_models_payload(env, discovered_oc, discovered_gpt):
         if not models:
             old = (keep.get(name) or {}).get("models") or []
             models = [m.get("id") for m in old if isinstance(m, dict) and m.get("id")]
+        out = []
+        for m in models:
+            spec = OPENCODE_MODEL_SPECS.get(m)
+            e = {"id": m, "name": m}
+            if spec:
+                e["contextWindow"], e["maxTokens"], e["reasoning"], e["input"] = spec
+            out.append(e)
         return {"name": (keep.get(name) or {}).get("name") or name,
                 "baseUrl": base, "apiKey": key, "api": api,
-                "models": [{"id": m, "name": m} for m in models]}
+                "models": out}
 
     oc_models = discovered_oc or [m.get("id") for m in (keep.get("opencode-go") or {}).get("models", []) if isinstance(m, dict)]
     gpt_models = discovered_gpt or [m.get("id") for m in (keep.get("gpt") or {}).get("models", []) if isinstance(m, dict)]
@@ -311,7 +348,7 @@ def pi_models_payload(env, discovered_oc, discovered_gpt):
         gpt_models = [env["GPT_MODEL"]] + gpt_models
     resp_models = [m.get("id") for m in (keep.get("opencode-go-responses") or {}).get("models", []) if isinstance(m, dict)]
     if not resp_models:
-        resp_models = [m for m in oc_models if "muse-spark" in m] or oc_models[:2]
+        resp_models = oc_models[:2]
     if env["PI_MODEL"] not in resp_models:
         resp_models = [env["PI_MODEL"]] + resp_models
     return {
@@ -459,8 +496,8 @@ def cmd_export(args):
     env["GPT_BASE_URL"] = b.group(1) if b else ""
     env["GPT_API_KEY"] = t.group(1) if t else ""
     pi_s = read_json(HOME / ".pi" / "agent" / "settings.json")
-    env["PI_PROVIDER"] = pi_s.get("defaultProvider") or "opencode-go-responses"
-    env["PI_MODEL"] = pi_s.get("defaultModel") or "muse-spark-1.3-contributor"
+    env["PI_PROVIDER"] = pi_s.get("defaultProvider") or "opencode-go"
+    env["PI_MODEL"] = pi_s.get("defaultModel") or "deepseek-v4-flash-vision-exp"
     pi_m = read_json(HOME / ".pi" / "agent" / "models.json").get("providers", {})
     env["OPENCODE_BASE_URL"] = ((pi_m.get("opencode-go") or {}).get("baseUrl") or OPENCODE_V1).rstrip("/")
     if not env["OPENCODE_API_KEY"]:
