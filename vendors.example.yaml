@@ -2,28 +2,27 @@
 # 如实记录【本机】各 agent 的选择：改这里，跑 .\sync.ps1，原样同步；
 # 拷到新电脑再跑一次，新电脑就和这台一模一样。
 
-gpt:
-  base_url: http://your-proxy:8081
-  api_key: sk-xxxx
+bai:
+  base_url: https://api.b.ai/v1
+  # key 二选一：直接写 api_key，或用 api_key_env 指向已设置的环境变量。
+  api_key_env: BAI_API_KEY
+  # api_key: sk-xxxx
 
-opencode:
-  api_key: sk-xxxx
-  # base_url 一般不用改：
-  # base_url: https://opencode.ai/zen/go/v1
-
-# 各 agent 原样记录，互不干扰（不要改成同一个，codex 只能用代理上的模型）
+# 各 agent 原样记录，互不干扰。
+# 注意：codex 需要 /v1/responses，bai 只提供 chat + anthropic，所以 codex 会被跳过。
 codex:
-  model: gpt-5.6-sol
+  provider: bai
+  model: qwen3.8-flash
 
 claude:
-  model: deepseek-v4-flash-vision-exp
-  sonnet: deepseek-v4-pro
-  opus: glm-5.3-flash
+  model: qwen3.8-flash
+  sonnet: qwen3.8-flash
+  opus: qwen3.8-flash
 
 pi:
-  provider: opencode-go
-  model: deepseek-v4-flash-vision-exp
+  provider: bai
+  model: qwen3.8-flash
 
 dsh:
-  provider: opencode-go
-  model: deepseek-v4-flash-vision-exp
+  provider: bai
+  model: qwen3.8-flash

@@ -40,14 +40,11 @@ Linux / macOS：
 cp vendors.example.yaml vendors.yaml
 ```
 
-编辑 `vendors.yaml`，至少填写这三项：
+编辑 `vendors.yaml`，至少填写这两项：
 
 ```yaml
-gpt:
-  base_url: http://your-gpt-proxy:8081
-  api_key: sk-...
-
-opencode:
+bai:
+  base_url: https://api.b.ai/v1
   api_key: sk-...
 ```
 
@@ -83,8 +80,8 @@ Linux / macOS 可以使用入口脚本：
 | `py bootstrap.py --dry-run` | 只显示将要修改的内容，不写文件 |
 | `py bootstrap.py --only claude pi` | 只同步指定的 agent |
 | `py bootstrap.py --no-probe` | 跳过在线模型列表探测 |
-| `py bootstrap.py check` | 检查配置，并探测两个 provider 的 `/models` 接口 |
-| `py bootstrap.py verify` | 向三个实际调用路径发送一次最小请求 |
+| `py bootstrap.py check` | 检查配置，并探测 provider 的 `/models` 接口 |
+| `py bootstrap.py verify` | 向两条实际调用路径（openai + anthropic）发送一次最小请求 |
 | `py bootstrap.py export --force` | 从当前电脑的 agent 配置反向生成 `vendors.yaml` |
 
 参数也可以写在子命令后面。例如：
@@ -99,9 +96,8 @@ python3 bootstrap.py check --config ./vendors.yaml --no-probe
 
 完整字段可以参考 [`vendors.example.yaml`](vendors.example.yaml)：
 
-- `gpt`：Codex 使用的 GPT 代理地址和 key。
-- `opencode`：Claude Code、Pi、ZCode、DSH 使用的 OpenCode 地址和 key。
-- `codex.model`：Codex 默认模型。
+- `bai`：唯一的模型上游。`base_url` + `api_key`（或 `api_key_env` 指向环境变量）。
+- `codex.model`：Codex 默认模型。bai 不提供 `/v1/responses`，同步时会跳过 codex。
 - `claude.model`、`sonnet`、`opus`：Claude Code 的默认模型及三个角色模型。
 - `pi.provider`、`pi.model`：Pi 的默认 provider 和模型。
 - `dsh.provider`、`dsh.model`：DSH 的默认 provider 和模型。
@@ -138,7 +134,7 @@ Linux / macOS 上由脚本新建的密钥文件会设置为仅当前用户可读
 | --- | --- |
 | Claude Code | `~/.claude/settings.json` |
 | Codex | `~/.codex/config.toml` |
-| Pi | `~/.pi/agent/settings.json`、`models.json` |
+| Pi | `~/.pi/agent/settings.json`、`models.json`、`models-store.json` |
 | ZCode | `~/.zcode/v2/config.json` |
 | DSH | `~/.dsh/settings.yaml`、`.credentials.yaml` |
 

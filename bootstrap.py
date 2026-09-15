@@ -22,9 +22,6 @@ HERE = Path(__file__).resolve().parent
 HOME = Path(os.environ.get("AGENT_HOME") or Path.home())
 CONFIG_DEFAULT = HERE / "vendors.yaml"
 
-OPENCODE_ROOT = "https://opencode.ai/zen/go"
-OPENCODE_V1 = OPENCODE_ROOT + "/v1"
-
 try:
     import yaml
 except ImportError:
@@ -34,9 +31,11 @@ except ImportError:
 class ConfigError(ValueError):
     """A user-facing vendors.yaml error."""
 
-REQUIRED = ("GPT_BASE_URL", "GPT_API_KEY", "OPENCODE_API_KEY")
-DISPLAY = [("GPT_BASE_URL", True), ("GPT_API_KEY", True), ("GPT_MODEL", False),
-           ("OPENCODE_API_KEY", True), ("OPENCODE_BASE_URL", False),
+DEFAULT_MODEL = "qwen3.8-flash"
+
+REQUIRED = ("BAI_API_KEY",)
+DISPLAY = [("BAI_API_KEY", True), ("BAI_BASE_URL", False),
+           ("CODEX_PROVIDER", False), ("CODEX_MODEL", False),
            ("CLAUDE_MODEL", False), ("CLAUDE_SONNET", False), ("CLAUDE_OPUS", False),
            ("PI_PROVIDER", False), ("PI_MODEL", False),
            ("DSH_PROVIDER", False), ("DSH_MODEL", False)]
@@ -58,6 +57,8 @@ OPENCODE_MODEL_SPECS = {
     "hy3": (256000, 128000, True, ["text"]),
     "deepseek-v4-pro": (1000000, 384000, True, ["text"]),
     "deepseek-v4-flash": (1000000, 384000, True, ["text"]),
+    "deepseek-v4.1-flash": (1000000, 384000, True, ["text"]),
+    "deepseek-flash": (1000000, 384000, True, ["text"]),
     "deepseek-v4-flash-vision-exp": (1000000, 384000, True, ["text", "image"]),
     "glm-5.3-flash": (1000000, 131072, True, ["text", "image"]),
     "grok-4.6": (500000, 500000, True, ["text", "image"]),
@@ -79,7 +80,10 @@ OPENCODE_MODEL_SPECS = {
 
 def mask(s):
     s = str(s or "")
-    return f"{s[:3]}...{s[-3:]}" if len(s) > 10 else ("<empty>" if not s else "<secret>")
+    if not s:
+        return "<empty>"
+    # anything this short is a provider/model name, not a credential
+    return f"{s[:3]}...{s[-3:]}" if len(s) > 10 else s
 
 
 def need_yaml():
@@ -119,22 +123,25 @@ def load_vendors(path):
             raise ConfigError(f"{p}: '{name}' must be a string")
         return value
 
-    g, o = section("gpt"), section("opencode")
+    b = section("bai")
     cl, co = section("claude"), section("codex")
     pi, dh = section("pi"), section("dsh")
+    bai_key_env = text(b, "api_key_env")
+    bai_key = text(b, "api_key") or (os.environ.get(bai_key_env, "") if bai_key_env else "")
     return {
-        "GPT_BASE_URL": text(g, "base_url").rstrip("/"),
-        "GPT_API_KEY": text(g, "api_key"),
-        "GPT_MODEL": text(co, "model") or text(g, "model") or "gpt-5.6-sol",
-        "OPENCODE_API_KEY": text(o, "api_key"),
-        "OPENCODE_BASE_URL": (text(o, "base_url") or OPENCODE_V1).rstrip("/"),
-        "CLAUDE_MODEL": text(cl, "model") or "deepseek-v4-flash-vision-exp",
-        "CLAUDE_SONNET": text(cl, "sonnet") or text(cl, "model") or "deepseek-v4-pro",
-        "CLAUDE_OPUS": text(cl, "opus") or text(cl, "model") or "glm-5.3-flash",
-        "PI_PROVIDER": text(pi, "provider") or "opencode-go",
-        "PI_MODEL": text(pi, "model") or "deepseek-v4-flash-vision-exp",
-        "DSH_PROVIDER": text(dh, "provider") or "opencode-go",
-        "DSH_MODEL": text(dh, "model") or "deepseek-v4-flash-vision-exp",
+        "BAI_API_KEY": bai_key,
+        "BAI_API_KEY_REF": f"${bai_key_env}" if bai_key_env else bai_key,
+        "BAI_BASE_URL": (text(b, "base_url") or "https://api.b.ai/v1").rstrip("/"),
+        "CODEX_PROVIDER": text(co, "provider") or "bai",
+        "CODEX_MODEL": text(co, "model") or DEFAULT_MODEL,
+        "CLAUDE_MODEL": text(cl, "model") or DEFAULT_MODEL,
+        "CLAUDE_SONNET": text(cl, "sonnet") or text(cl, "model") or DEFAULT_MODEL,
+        "CLAUDE_OPUS": text(cl, "opus") or text(cl, "model") or DEFAULT_MODEL,
+        "PI_PROVIDER": text(pi, "provider") or "bai",
+        "PI_MODEL": text(pi, "model") or DEFAULT_MODEL,
+        "PI_HTTP_PROXY": text(pi, "http_proxy"),
+        "DSH_PROVIDER": text(dh, "provider") or "bai",
+        "DSH_MODEL": text(dh, "model") or DEFAULT_MODEL,
     }
 
 
@@ -166,6 +173,17 @@ def fetch_models(base_url, api_key, timeout=10):
         except Exception:
             continue
     return []
+
+
+RETIRED_PROVIDERS = ("gpt", "opencode-go", "opencode-go-responses", "opencode-go-anthropic", "deepseek")
+
+
+def prune_providers(mapping, names=RETIRED_PROVIDERS):
+    """Drop provider entries whose upstream is gone (opencode / gpt proxy / deepseek)."""
+    gone = [k for k in list(mapping) if k in names]
+    for k in gone:
+        del mapping[k]
+    return gone
 
 
 def _lock_down(path):
@@ -275,14 +293,15 @@ def setup_claude(env, dry_run, out):
     if not p.exists():
         out.append(("claude", str(p), "skip (not installed)"))
         return
-    root = OPENCODE_ROOT  # pi-style clients append /v1/messages themselves
+    # b.ai serves the Anthropic protocol at <root>/v1/messages; clients append the path.
+    root = re.sub(r"/v1$", "", env["BAI_BASE_URL"].rstrip("/"))
     cm, son, opu = env["CLAUDE_MODEL"], env["CLAUDE_SONNET"], env["CLAUDE_OPUS"]
 
     def mut(d):
         e = d.setdefault("env", {})
         # gateway only accepts x-api-key; ANTHROPIC_API_KEY is sent as x-api-key,
         # while ANTHROPIC_AUTH_TOKEN would go out as Bearer and 401.
-        e["ANTHROPIC_API_KEY"] = env["OPENCODE_API_KEY"]
+        e["ANTHROPIC_API_KEY"] = env["BAI_API_KEY"]
         e.pop("ANTHROPIC_AUTH_TOKEN", None)
         e["ANTHROPIC_BASE_URL"] = root
         e["ANTHROPIC_MODEL"] = cm
@@ -301,27 +320,70 @@ def setup_claude(env, dry_run, out):
         save_json(p, json.loads(new))
 
 
+def _codex_catalog_path(p):
+    """Path of codex's local model catalog (model_catalog_json), default under .codex."""
+    try:
+        tx = p.read_text(encoding="utf-8") if p.exists() else ""
+    except OSError:
+        tx = ""
+    m = re.search(r'model_catalog_json\s*=\s*"([^"]+)"', tx)
+    return Path(m.group(1)) if m else HOME / ".codex" / "models.json"
+
+
+def ensure_codex_catalog(path, model):
+    """Make sure `model` has a metadata entry in codex's local catalog.
+
+    Clones the same-family entry (e.g. gpt-5.6-sol for gpt-5.6-luna) so metadata
+    stays accurate; returns (changed, new_data). Models without a same-family
+    template are left alone — codex's fallback metadata still works.
+    """
+    if not path.exists():
+        return False, None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False, None
+    ms = data.get("models")
+    if not isinstance(ms, list):
+        return False, None
+    if any(isinstance(m, dict) and m.get("slug") == model for m in ms):
+        return False, None
+
+    def family(s):
+        return s.rsplit(".", 1)[0] if "." in str(s) else str(s)
+
+    tmpl = None
+    for m in ms:
+        if isinstance(m, dict) and isinstance(m.get("slug"), str) and family(m["slug"]) == family(model):
+            tmpl = m
+            break
+    if tmpl is None:
+        return False, None
+    import copy
+    entry = copy.deepcopy(tmpl)
+    entry["slug"] = model
+    entry["display_name"] = model
+    entry["description"] = model
+    spec = OPENCODE_MODEL_SPECS.get(model)
+    if spec:
+        entry["context_window"] = spec[0]
+        entry["max_context_window"] = spec[0]
+    ms.append(entry)
+    return True, data
+
+
 def setup_codex(env, dry_run, out):
     p = HOME / ".codex" / "config.toml"
     if not p.exists():
         out.append(("codex", str(p), "skip (not installed)"))
         return
-    updates = {
-        None: {"model": env["GPT_MODEL"], "model_provider": "gpt"},
-        "gpt": {"base_url": env["GPT_BASE_URL"].rstrip("/"), "wire_api": "responses",
-                "experimental_bearer_token": env["GPT_API_KEY"]},
-    }
-    _, new = patch_toml(p, updates)
-    old = p.read_text(encoding="utf-8") if p.exists() else ""
-    changed = new != old
-    out.append(("codex", str(p), changed))
-    if changed and not dry_run:
-        write_text(p, new)
+    # b.ai lists supported_endpoint_types [openai, anthropic] for all 47 models -- no
+    # /v1/responses, and codex >= 0.154 dropped wire_api = "chat", so there is nothing
+    # working to write. Left untouched until the codex upstream question is settled.
+    out.append(("codex", str(p), "skip (bai serves no /responses; codex 0.154+ needs it)"))
 
 
-def pi_models_payload(env, discovered_oc, discovered_gpt):
-    oc_base = env["OPENCODE_BASE_URL"].rstrip("/")
-    gpt_base = env["GPT_BASE_URL"].rstrip("/")
+def bai_models_payload(env, discovered_bai):
     mp = HOME / ".pi" / "agent" / "models.json"
     keep = {}
     if mp.exists():
@@ -329,44 +391,32 @@ def pi_models_payload(env, discovered_oc, discovered_gpt):
             keep = json.loads(mp.read_text(encoding="utf-8")).get("providers", {})
         except Exception:
             keep = {}
+    old = (keep.get("bai") or {}).get("models") or []
+    ids = discovered_bai or [m.get("id") for m in old if isinstance(m, dict) and m.get("id")]
+    if env["PI_MODEL"] not in ids:
+        ids = [env["PI_MODEL"]] + ids
 
-    def entry(name, base, api, key, models):
-        if not models:
-            old = (keep.get(name) or {}).get("models") or []
-            models = [m.get("id") for m in old if isinstance(m, dict) and m.get("id")]
-        out = []
-        for m in models:
-            spec = OPENCODE_MODEL_SPECS.get(m)
-            e = {"id": m, "name": m}
-            if spec:
-                e["contextWindow"], e["maxTokens"], e["reasoning"], e["input"] = spec
-            out.append(e)
-        return {"name": (keep.get(name) or {}).get("name") or name,
-                "baseUrl": base, "apiKey": key, "api": api,
-                "models": out}
-
-    oc_models = discovered_oc or [m.get("id") for m in (keep.get("opencode-go") or {}).get("models", []) if isinstance(m, dict)]
-    gpt_models = discovered_gpt or [m.get("id") for m in (keep.get("gpt") or {}).get("models", []) if isinstance(m, dict)]
-    if env["GPT_MODEL"] not in gpt_models:
-        gpt_models = [env["GPT_MODEL"]] + gpt_models
-    # default model must live in its own provider, not always in responses.
-    if env["PI_PROVIDER"] == "gpt":
-        if env["PI_MODEL"] not in gpt_models:
-            gpt_models = [env["PI_MODEL"]] + gpt_models
-    elif env["PI_PROVIDER"] != "opencode-go-responses":
-        if env["PI_MODEL"] not in oc_models:
-            oc_models = [env["PI_MODEL"]] + oc_models
-    resp_models = [m.get("id") for m in (keep.get("opencode-go-responses") or {}).get("models", []) if isinstance(m, dict)]
-    if env["PI_PROVIDER"] == "opencode-go-responses" and env["PI_MODEL"] not in resp_models:
-        resp_models = [env["PI_MODEL"]] + resp_models
-    return {
-        "opencode-go": entry("opencode-go", oc_base, "openai-completions", env["OPENCODE_API_KEY"], oc_models),
-        "gpt": entry("gpt", gpt_base, "openai-responses", env["GPT_API_KEY"], gpt_models),
-        "opencode-go-responses": entry("opencode-go-responses", oc_base, "openai-responses", env["OPENCODE_API_KEY"], resp_models),
-    }
+    models = []
+    for m in ids:
+        e = {"id": m, "name": m}
+        spec = OPENCODE_MODEL_SPECS.get(m)
+        if spec:
+            e["contextWindow"], e["maxTokens"], e["reasoning"], e["input"] = spec
+        if m.startswith("qwen"):
+            e["compat"] = {
+                "maxTokensField": "max_tokens",
+                "supportsStore": False,
+                "supportsDeveloperRole": False,
+                "supportsReasoningEffort": False,
+                "thinkingFormat": "qwen",
+            }
+        models.append(e)
+    return {"bai": {"name": (keep.get("bai") or {}).get("name") or "bai",
+                    "baseUrl": env["BAI_BASE_URL"], "apiKey": env["BAI_API_KEY_REF"],
+                    "api": "openai-completions", "models": models}}
 
 
-def setup_pi(env, dry_run, out, discovered_oc, discovered_gpt):
+def setup_pi(env, dry_run, out, discovered_bai):
     sp = HOME / ".pi" / "agent" / "settings.json"
     if not sp.exists():
         out.append(("pi", str(sp), "skip (not installed)"))
@@ -375,56 +425,62 @@ def setup_pi(env, dry_run, out, discovered_oc, discovered_gpt):
     def mut(d):
         d["defaultProvider"] = env["PI_PROVIDER"]
         d["defaultModel"] = env["PI_MODEL"]
+        if env.get("PI_HTTP_PROXY"):
+            d["httpProxy"] = env["PI_HTTP_PROXY"]
 
     changed, new = patch_json(sp, mut)
     out.append(("pi settings", str(sp), changed))
     if changed and not dry_run:
         save_json(sp, json.loads(new))
     mp = HOME / ".pi" / "agent" / "models.json"
-    payload = pi_models_payload(env, discovered_oc, discovered_gpt)
+    payload = bai_models_payload(env, discovered_bai)
 
     def mut2(d):
         ps = d.setdefault("providers", {})
         ps.update(payload)
+        prune_providers(ps)
 
     changed2, new2 = patch_json(mp, mut2)
     out.append(("pi models", str(mp), changed2))
     if changed2 and not dry_run:
         save_json(mp, json.loads(new2))
+    # pi caches one catalog block per provider; stale keys keep dead models selectable
+    st = HOME / ".pi" / "agent" / "models-store.json"
+    if st.exists():
+        def mut3(d):
+            prune_providers(d)
+
+        changed3, new3 = patch_json(st, mut3)
+        out.append(("pi models store", str(st), changed3))
+        if changed3 and not dry_run:
+            save_json(st, json.loads(new3))
 
 
 def setup_zcode(env, dry_run, out):
     p = HOME / ".zcode" / "v2" / "config.json"
-    oc_v1, oc_root, gpt = env["OPENCODE_BASE_URL"].rstrip("/"), OPENCODE_ROOT, env["GPT_BASE_URL"].rstrip("/")
-    want = {
-        "opencode-go": (oc_v1, env["OPENCODE_API_KEY"]),
-        "opencode-go-responses": (oc_v1, env["OPENCODE_API_KEY"]),
-        "opencode-go-anthropic": (oc_root, env["OPENCODE_API_KEY"]),
-        "gpt": (gpt, env["GPT_API_KEY"]),
-    }
-
-    def mut(d):
-        pm = d.setdefault("provider", {})
-        for key, (base, api_key) in want.items():
-            e = pm.setdefault(key, {})
-            e.setdefault("name", "OpenCode Go" if key.startswith("opencode") else "GPT Proxy")
-            e["kind"] = e.get("kind") or "openai-compatible"
-            if e.get("enabled") is None:
-                e["enabled"] = True
-            o = e.setdefault("options", {})
-            o["baseURL"] = base
-            o["apiKey"] = api_key
-
     if not p.exists():
         out.append(("zcode", str(p), "skip (not installed)"))
         return
+
+    def mut(d):
+        pm = d.setdefault("provider", {})
+        e = pm.setdefault("bai", {})
+        e["name"] = e.get("name") or "B.AI"
+        e["kind"] = e.get("kind") or "openai-compatible"
+        if e.get("enabled") is None:
+            e["enabled"] = True
+        o = e.setdefault("options", {})
+        o["baseURL"] = env["BAI_BASE_URL"].rstrip("/")
+        o["apiKey"] = env["BAI_API_KEY"]
+        prune_providers(pm)
+
     changed, new = patch_json(p, mut)
     out.append(("zcode", str(p), changed))
     if changed and not dry_run:
         save_json(p, json.loads(new))
 
 
-def setup_dsh(env, dry_run, out, discovered_oc, discovered_gpt):
+def setup_dsh(env, dry_run, out, discovered_bai):
     try:
         import yaml
     except ImportError:
@@ -442,25 +498,15 @@ def setup_dsh(env, dry_run, out, discovered_oc, discovered_gpt):
 
     # 无探测结果时沿用文件里已有的清单，绝不写成单个模型
     keep = ((data.get("llm-pi-ai") or {}).get("providers") or {})
-
-    def keep_ids(name, fallback):
-        ids = [m.get("id") for m in (keep.get(name) or {}).get("models", []) or [] if isinstance(m, dict)]
-        return ids or [fallback]
-
-    oc_ids = discovered_oc or keep_ids("opencode-go", env["DSH_MODEL"])
-    if env["DSH_MODEL"] not in oc_ids:
-        oc_ids = [env["DSH_MODEL"]] + oc_ids
-    gpt_ids = discovered_gpt or keep_ids("gpt", env["GPT_MODEL"])
-    if env["GPT_MODEL"] not in gpt_ids:
-        gpt_ids = [env["GPT_MODEL"]] + gpt_ids
-    oc_models = rows(oc_ids)
-    gpt_models = rows(gpt_ids)
+    old_ids = [m.get("id") for m in ((keep.get("bai") or {}).get("models") or []) if isinstance(m, dict)]
+    bai_ids = discovered_bai or old_ids or [env["DSH_MODEL"]]
+    if env["DSH_MODEL"] not in bai_ids:
+        bai_ids = [env["DSH_MODEL"]] + bai_ids
     data.setdefault("agent-default-model", {}).update({"provider": env["DSH_PROVIDER"], "model": env["DSH_MODEL"]})
     llm = data.setdefault("llm-pi-ai", {}).setdefault("providers", {})
-    llm["gpt"] = {"displayName": "GPT Proxy", "apiKeyEnv": "GPT_API_KEY", "api": "openai-responses",
-                  "baseURL": env["GPT_BASE_URL"].rstrip("/"), "models": gpt_models}
-    llm["opencode-go"] = {"displayName": "OpenCode Go", "apiKeyEnv": "OPENCODE_GO_API_KEY",
-                          "api": "openai-completions", "baseURL": env["OPENCODE_BASE_URL"].rstrip("/"), "models": oc_models}
+    llm["bai"] = {"displayName": "B.AI", "apiKeyEnv": "BAI_API_KEY", "api": "openai-completions",
+                  "baseURL": env["BAI_BASE_URL"], "models": rows(bai_ids)}
+    prune_providers(llm)
     old = sp.read_text(encoding="utf-8")
     new = yaml.safe_dump(data, allow_unicode=True, sort_keys=False)
     out.append(("dsh settings", str(sp), new != old))
@@ -468,8 +514,9 @@ def setup_dsh(env, dry_run, out, discovered_oc, discovered_gpt):
         write_text(sp, new)
     creds = yaml.safe_load(cp.read_text(encoding="utf-8")) if cp.exists() else {}
     refs = (creds or {}).setdefault("refs", {})
-    refs["GPT_API_KEY"] = env["GPT_API_KEY"]
-    refs["OPENCODE_GO_API_KEY"] = env["OPENCODE_API_KEY"]
+    refs["BAI_API_KEY"] = env["BAI_API_KEY"]
+    for stale in ("GPT_API_KEY", "OPENCODE_GO_API_KEY", "DEEPSEEK_API_KEY"):
+        refs.pop(stale, None)
     new_c = yaml.safe_dump(creds, allow_unicode=True, sort_keys=False)
     old_c = cp.read_text(encoding="utf-8") if cp.exists() else ""
     out.append(("dsh credentials", str(cp), new_c != old_c))
@@ -490,43 +537,48 @@ def cmd_export(args):
     need_yaml()
     env = {}
     cl = read_json(HOME / ".claude" / "settings.json").get("env", {})
-    env["OPENCODE_API_KEY"] = cl.get("ANTHROPIC_AUTH_TOKEN") or cl.get("ANTHROPIC_API_KEY") or ""
-    env["CLAUDE_MODEL"] = cl.get("ANTHROPIC_MODEL") or "deepseek-v4-flash-vision-exp"
+    env["CLAUDE_MODEL"] = cl.get("ANTHROPIC_MODEL") or DEFAULT_MODEL
     env["CLAUDE_SONNET"] = cl.get("ANTHROPIC_DEFAULT_SONNET_MODEL") or env["CLAUDE_MODEL"]
     env["CLAUDE_OPUS"] = cl.get("ANTHROPIC_DEFAULT_OPUS_MODEL") or env["CLAUDE_MODEL"]
     tx = (HOME / ".codex" / "config.toml").read_text(encoding="utf-8") if (HOME / ".codex" / "config.toml").exists() else ""
-    m = re.search(r"model\s*=\s*\"([^\"]+)\"", tx)
-    env["GPT_MODEL"] = m.group(1) if m else "gpt-5.6-sol"
-    sec = re.search(r"\[model_providers\.gpt\](.*?)(?=^\[|\Z)", tx, re.S | re.M)
-    sec = sec.group(1) if sec else ""
-    b = re.search(r"base_url\s*=\s*\"([^\"]+)\"", sec)
-    t = re.search(r"experimental_bearer_token\s*=\s*\"([^\"]+)\"", sec)
-    env["GPT_BASE_URL"] = b.group(1) if b else ""
-    env["GPT_API_KEY"] = t.group(1) if t else ""
+    m = re.search(r"^model\s*=\s*\"([^\"]+)\"", tx, re.M)
+    env["CODEX_MODEL"] = m.group(1) if m else DEFAULT_MODEL
+    mp = re.search(r"^model_provider\s*=\s*\"([^\"]+)\"", tx, re.M)
+    env["CODEX_PROVIDER"] = mp.group(1) if mp else "bai"
     pi_s = read_json(HOME / ".pi" / "agent" / "settings.json")
-    env["PI_PROVIDER"] = pi_s.get("defaultProvider") or "opencode-go"
-    env["PI_MODEL"] = pi_s.get("defaultModel") or "deepseek-v4-flash-vision-exp"
+    env["PI_PROVIDER"] = pi_s.get("defaultProvider") or "bai"
+    env["PI_MODEL"] = pi_s.get("defaultModel") or DEFAULT_MODEL
+    env["PI_HTTP_PROXY"] = pi_s.get("httpProxy") or ""
     pi_m = read_json(HOME / ".pi" / "agent" / "models.json").get("providers", {})
-    env["OPENCODE_BASE_URL"] = ((pi_m.get("opencode-go") or {}).get("baseUrl") or OPENCODE_V1).rstrip("/")
-    if not env["OPENCODE_API_KEY"]:
-        env["OPENCODE_API_KEY"] = (pi_m.get("opencode-go") or {}).get("apiKey") or ""
+    bai = pi_m.get("bai") or {}
+    env["BAI_BASE_URL"] = (bai.get("baseUrl") or "https://api.b.ai/v1").rstrip("/")
+    bai_key = bai.get("apiKey") or ""
+    env["BAI_API_KEY"] = os.environ.get(bai_key[1:], "") if isinstance(bai_key, str) and bai_key.startswith("$") else bai_key
+    env["BAI_API_KEY_REF"] = bai_key if isinstance(bai_key, str) and bai_key.startswith("$") else ""
+    if not env["BAI_API_KEY"] and not env["BAI_API_KEY_REF"]:
+        env["BAI_API_KEY"] = cl.get("ANTHROPIC_API_KEY") or ""
     try:
         dh = (yaml.safe_load((HOME / ".dsh" / "settings.yaml").read_text(encoding="utf-8")) or {})
         dh = dh.get("agent-default-model", {}) or {}
     except Exception:
         dh = {}
-    env["DSH_PROVIDER"] = dh.get("provider") or "opencode-go"
-    env["DSH_MODEL"] = dh.get("model") or "deepseek-v4-flash-vision-exp"
+    env["DSH_PROVIDER"] = dh.get("provider") or "bai"
+    env["DSH_MODEL"] = dh.get("model") or DEFAULT_MODEL
     dest = Path(args.config)
     if dest.exists() and not args.force:
         print(f"[export] {dest} exists; use --force to overwrite")
         return 2
+    bai_sec = {"base_url": env["BAI_BASE_URL"]}
+    if env["BAI_API_KEY_REF"]:
+        bai_sec["api_key_env"] = env["BAI_API_KEY_REF"][1:]
+    elif env["BAI_API_KEY"]:
+        bai_sec["api_key"] = env["BAI_API_KEY"]
     data = {
-        "gpt": {"base_url": env["GPT_BASE_URL"], "api_key": env["GPT_API_KEY"]},
-        "opencode": {"api_key": env["OPENCODE_API_KEY"], "base_url": env["OPENCODE_BASE_URL"]},
-        "codex": {"model": env["GPT_MODEL"]},
+        "bai": bai_sec,
+        "codex": {"provider": env["CODEX_PROVIDER"], "model": env["CODEX_MODEL"]},
         "claude": {"model": env["CLAUDE_MODEL"], "sonnet": env["CLAUDE_SONNET"], "opus": env["CLAUDE_OPUS"]},
-        "pi": {"provider": env["PI_PROVIDER"], "model": env["PI_MODEL"]},
+        "pi": {"provider": env["PI_PROVIDER"], "model": env["PI_MODEL"],
+               **({"http_proxy": env["PI_HTTP_PROXY"]} if env["PI_HTTP_PROXY"] else {})},
         "dsh": {"provider": env["DSH_PROVIDER"], "model": env["DSH_MODEL"]},
     }
     write_text(dest, "# agent-bootstrap: single source of truth. Edit here, run: py bootstrap.py\n"
@@ -542,25 +594,24 @@ def cmd_setup(args):
     if check_env(env):
         return 2
     only = set(args.only) if args.only else set(AGENTS)
-    print(f"[bootstrap] config={args.config} gpt={mask(env['GPT_API_KEY'])}@{env['GPT_BASE_URL']} "
-          f"opencode={mask(env['OPENCODE_API_KEY'])} models={env['GPT_MODEL']}/{env['CLAUDE_MODEL']}/{env['PI_MODEL']}")
-    doc, dgpt = [], []
+    print(f"[bootstrap] config={args.config} bai={mask(env['BAI_API_KEY'])}@{env['BAI_BASE_URL']} "
+          f"models={env['CODEX_MODEL']}/{env['CLAUDE_MODEL']}/{env['PI_MODEL']}")
+    dbai = []
     if not args.no_probe:
-        doc = fetch_models(env["OPENCODE_BASE_URL"], env["OPENCODE_API_KEY"])
-        dgpt = fetch_models(env["GPT_BASE_URL"], env["GPT_API_KEY"])
-        print(f"[bootstrap] probe: opencode-go {len(doc)} models, gpt {len(dgpt)} models" +
-              (" (offline? keeping existing lists)" if not doc and not dgpt else ""))
+        dbai = fetch_models(env["BAI_BASE_URL"], env["BAI_API_KEY"])
+        print(f"[bootstrap] probe: bai {len(dbai)} models" +
+              (" (offline? keeping existing lists)" if not dbai else ""))
     out = []
     if "claude" in only:
         setup_claude(env, args.dry_run, out)
     if "codex" in only:
         setup_codex(env, args.dry_run, out)
     if "pi" in only:
-        setup_pi(env, args.dry_run, out, doc, dgpt)
+        setup_pi(env, args.dry_run, out, dbai)
     if "zcode" in only:
         setup_zcode(env, args.dry_run, out)
     if "dsh" in only:
-        setup_dsh(env, args.dry_run, out, doc, dgpt)
+        setup_dsh(env, args.dry_run, out, dbai)
     print("[bootstrap] DRY-RUN -- nothing written" if args.dry_run else "[bootstrap] done:")
     for name, path, changed in out:
         flag = "~" if str(changed).startswith("skip") else ("*" if changed else "=")
@@ -598,15 +649,13 @@ def cmd_verify(args):
     if check_env(env):
         return
     print("[verify] live tests (max_tokens=5 each):")
+    bai_root = re.sub(r"/v1$", "", env["BAI_BASE_URL"].rstrip("/"))
     tests = [
-        ("gpt proxy (codex path)", env["GPT_BASE_URL"].rstrip("/") + "/v1/chat/completions",
-         {"Authorization": f"Bearer {env['GPT_API_KEY']}"},
-         {"model": env["GPT_MODEL"], "messages": [{"role": "user", "content": "ping"}], "max_tokens": 5}),
-        ("opencode openai (pi/zcode path)", env["OPENCODE_BASE_URL"].rstrip("/") + "/chat/completions",
-         {"Authorization": f"Bearer {env['OPENCODE_API_KEY']}"},
-         {"model": env["CLAUDE_MODEL"], "messages": [{"role": "user", "content": "ping"}], "max_tokens": 5}),
-        ("opencode anthropic (claude path)", OPENCODE_ROOT + "/v1/messages",
-         {"x-api-key": env["OPENCODE_API_KEY"], "anthropic-version": "2023-06-01"},
+        ("bai openai (pi/dsh/zcode path)", env["BAI_BASE_URL"] + "/chat/completions",
+         {"Authorization": f"Bearer {env['BAI_API_KEY']}"},
+         {"model": env["PI_MODEL"], "messages": [{"role": "user", "content": "ping"}], "max_tokens": 5}),
+        ("bai anthropic (claude path)", bai_root + "/v1/messages",
+         {"x-api-key": env["BAI_API_KEY"], "anthropic-version": "2023-06-01"},
          {"model": env["CLAUDE_MODEL"], "max_tokens": 5,
           "messages": [{"role": "user", "content": "ping"}]}),
     ]
@@ -616,15 +665,12 @@ def cmd_verify(args):
         allok = allok and ok
         print(f"  {'OK ' if ok else 'FAIL'} {label}" + (f" -> {snippet(res)}" if ok else f": {res}"))
     print("[verify] defaults in live catalog:")
-    catalogs = {"gpt": fetch_models(env["GPT_BASE_URL"], env["GPT_API_KEY"]),
-                "opencode-go": fetch_models(env["OPENCODE_BASE_URL"], env["OPENCODE_API_KEY"])}
-    for label, model, cat in (("codex", env["GPT_MODEL"], "gpt"),
-                              ("claude", env["CLAUDE_MODEL"], "opencode-go"),
-                              ("pi", env["PI_MODEL"], "opencode-go"),
-                              ("dsh", env["DSH_MODEL"], "opencode-go")):
-        ids = catalogs[cat]
+    ids = fetch_models(env["BAI_BASE_URL"], env["BAI_API_KEY"])
+    for label, model in (("codex", env["CODEX_MODEL"]), ("claude", env["CLAUDE_MODEL"]),
+                         ("pi", env["PI_MODEL"]), ("dsh", env["DSH_MODEL"])):
         if not ids:
-            print(f"  SKIP {label}: {cat} catalog unreachable")
+            print(f"  SKIP {label}: bai catalog unreachable")
+            allok = False
             continue
         okm = model in ids
         allok = allok and okm
@@ -654,8 +700,9 @@ def cmd_check(args):
         return 2
     failed = False
     if not args.no_probe:
-        for label, base, key in (("opencode-go", env["OPENCODE_BASE_URL"], env["OPENCODE_API_KEY"]),
-                                 ("gpt", env["GPT_BASE_URL"], env["GPT_API_KEY"])):
+        for label, base, key in (("bai", env["BAI_BASE_URL"], env["BAI_API_KEY"]),):
+            if not key:
+                continue
             ids = fetch_models(base, key)
             if not ids:
                 failed = True
