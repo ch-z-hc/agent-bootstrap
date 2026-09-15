@@ -1,2 +1,7 @@
 vendors.yaml
 __pycache__/
+
+# 临时副本，防止含密钥的备份被 git add -A 收进去
+_*.yaml
+*.bak
+*.bak.yaml
