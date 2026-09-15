@@ -18,6 +18,11 @@ import sys
 import urllib.request
 from pathlib import Path
 
+# Keep provider replies with emoji or other non-console characters from
+# crashing verification on Windows' legacy console encodings.
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(errors="replace")
+
 HERE = Path(__file__).resolve().parent
 HOME = Path(os.environ.get("AGENT_HOME") or Path.home())
 CONFIG_DEFAULT = HERE / "vendors.yaml"
@@ -124,6 +129,7 @@ def load_vendors(path):
         return value
 
     b = section("bai")
+    ax = section("aizex")
     cl, co = section("claude"), section("codex")
     pi, dh = section("pi"), section("dsh")
     bai_key_env = text(b, "api_key_env")
@@ -142,6 +148,9 @@ def load_vendors(path):
         "PI_HTTP_PROXY": text(pi, "http_proxy"),
         "DSH_PROVIDER": text(dh, "provider") or "bai",
         "DSH_MODEL": text(dh, "model") or DEFAULT_MODEL,
+        "AIZEX_BASE_URL": (text(ax, "base_url") or "https://ca.memofun.net/v1").rstrip("/"),
+        "AIZEX_API_KEY": text(ax, "api_key") or (os.environ.get(text(ax, "api_key_env"), "") if text(ax, "api_key_env") else ""),
+        "AIZEX_API_KEY_REF": f"${text(ax, 'api_key_env')}" if text(ax, "api_key_env") else text(ax, "api_key"),
     }
 
 
@@ -377,10 +386,14 @@ def setup_codex(env, dry_run, out):
     if not p.exists():
         out.append(("codex", str(p), "skip (not installed)"))
         return
-    # b.ai lists supported_endpoint_types [openai, anthropic] for all 47 models -- no
-    # /v1/responses, and codex >= 0.154 dropped wire_api = "chat", so there is nothing
-    # working to write. Left untouched until the codex upstream question is settled.
-    out.append(("codex", str(p), "skip (bai serves no /responses; codex 0.154+ needs it)"))
+    updates = {None: {"model": env["CODEX_MODEL"], "model_reasoning_effort": "xhigh",
+                      "model_provider": env["CODEX_PROVIDER"], "approval_policy": "on-request"},
+               env["CODEX_PROVIDER"]: {"base_url": env["AIZEX_BASE_URL"], "wire_api": "responses",
+                                        "requires_openai_auth": False, "supports_websockets": True}}
+    changed, new = patch_toml(p, updates)
+    if changed and not dry_run:
+        write_text(p, new)
+    out.append(("codex", str(p), changed))
 
 
 def bai_models_payload(env, discovered_bai):

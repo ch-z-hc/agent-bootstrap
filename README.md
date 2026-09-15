@@ -96,8 +96,8 @@ python3 bootstrap.py check --config ./vendors.yaml --no-probe
 
 完整字段可以参考 [`vendors.example.yaml`](vendors.example.yaml)：
 
-- `bai`：唯一的模型上游。`base_url` + `api_key`（或 `api_key_env` 指向环境变量）。
-- `codex.model`：Codex 默认模型。bai 不提供 `/v1/responses`，同步时会跳过 codex。
+- 厂商段（例如 `bai`、`aizex`）：`base_url` + `api_key`（或 `api_key_env` 指向环境变量）。
+- `codex.provider` / `codex.model`：Codex 默认厂商和模型；当前 Codex 使用 `responses` API。
 - `claude.model`、`sonnet`、`opus`：Claude Code 的默认模型及三个角色模型。
 - `pi.provider`、`pi.model`：Pi 的默认 provider 和模型。
 - `dsh.provider`、`dsh.model`：DSH 的默认 provider 和模型。

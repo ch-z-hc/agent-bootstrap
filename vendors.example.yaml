@@ -8,11 +8,14 @@ bai:
   api_key_env: BAI_API_KEY
   # api_key: sk-xxxx
 
+aizex:
+  base_url: https://ca.memofun.net/v1
+  api_key_env: AIZEX_API_KEY
+
 # 各 agent 原样记录，互不干扰。
-# 注意：codex 需要 /v1/responses，bai 只提供 chat + anthropic，所以 codex 会被跳过。
 codex:
-  provider: bai
-  model: qwen3.8-flash
+  provider: aizex
+  model: gpt-5.6-sol
 
 claude:
   model: qwen3.8-flash
