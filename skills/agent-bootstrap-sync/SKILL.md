@@ -21,8 +21,9 @@ aizex:
   base_url: https://ca.memofun.net/v1
   api_key_env: AIZEX_API_KEY
 codex:
-  provider: bai
-  model: qwen3.8-flash        # sync SKIPS codex, see Rules
+  provider: aizex
+  model: gpt-5.6-sol
+  reasoning_effort: low       # 省略则用 xhigh
 claude:
   model: qwen3.8-flash
   sonnet: qwen3.8-flash
@@ -36,9 +37,9 @@ dsh:
   model: qwen3.8-flash
 ```
 
-One upstream only: **b.ai**. Every other upstream ever configured here has been dropped and is
-out of scope — do not re-add, probe, or recommend one. The sync prunes their leftovers from
-agent files via `RETIRED_PROVIDERS` in `bootstrap.py`.
+Two live upstreams: **b.ai** (claude / pi / dsh / zcode) and **aizex** (codex). Everything else
+ever configured here is retired and out of scope — do not re-add, probe, or recommend it. The sync
+prunes leftovers from agent files via `RETIRED_PROVIDERS` in `bootstrap.py`.
 
 Provider sections are ordinary YAML mappings. A provider may define `base_url`,
 `api_key_env` (preferred) or `api_key`, API type, and any provider-specific
@@ -69,8 +70,12 @@ Run every step with `py` (Windows Git Bash has no `python3`):
 
 - Keys and URLs come from `export` or the user, never invented. `bootstrap.py` has no network
   fallback for a bad key — a `401 Invalid or expired api_key` means the key, not the config.
-- Codex is configured from the `codex.provider` and `codex.model` entries and
-  the matching provider section; `wire_api` must be `responses` for current Codex.
+- Codex is configured from `codex.provider`, `codex.model` and `codex.reasoning_effort` plus the
+  matching provider section; `wire_api` must be `responses` for current Codex. The sync also writes
+  `[model_providers.<provider>.auth]` (`cmd /c echo` on Windows, `echo` elsewhere) because that is
+  the only way codex picks up a third-party key — so that provider's key must be resolvable in
+  `vendors.yaml` (inline `api_key`, or an `api_key_env` that is actually set), or the key block
+  silently stays whatever the machine already had. `export` reads it back out of that block.
 - `pi`/`dsh` model must exist in bai's `/models` list; sync probes it live and prepends missing IDs.
 - New models need a spec in `bootstrap.py` `OPENCODE_MODEL_SPECS` (still the table name, also used
   for bai) or pi falls back to 128k/16k windows. `qwen3.8-flash` = `(1000000, 131072, True, ["text", "image"])`.

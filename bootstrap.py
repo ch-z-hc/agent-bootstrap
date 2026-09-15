@@ -37,10 +37,11 @@ class ConfigError(ValueError):
     """A user-facing vendors.yaml error."""
 
 DEFAULT_MODEL = "qwen3.8-flash"
+DEFAULT_CODEX_REASONING = "xhigh"
 
 REQUIRED = ("BAI_API_KEY",)
 DISPLAY = [("BAI_API_KEY", True), ("BAI_BASE_URL", False),
-           ("CODEX_PROVIDER", False), ("CODEX_MODEL", False),
+           ("CODEX_PROVIDER", False), ("CODEX_MODEL", False), ("CODEX_REASONING", False),
            ("CLAUDE_MODEL", False), ("CLAUDE_SONNET", False), ("CLAUDE_OPUS", False),
            ("PI_PROVIDER", False), ("PI_MODEL", False),
            ("DSH_PROVIDER", False), ("DSH_MODEL", False)]
@@ -134,12 +135,17 @@ def load_vendors(path):
     pi, dh = section("pi"), section("dsh")
     bai_key_env = text(b, "api_key_env")
     bai_key = text(b, "api_key") or (os.environ.get(bai_key_env, "") if bai_key_env else "")
+    bai_url = (text(b, "base_url") or "https://api.b.ai/v1").rstrip("/")
+    ax_key_env = text(ax, "api_key_env")
+    ax_key = text(ax, "api_key") or (os.environ.get(ax_key_env, "") if ax_key_env else "")
+    ax_url = (text(ax, "base_url") or "https://ca.memofun.net/v1").rstrip("/")
     return {
         "BAI_API_KEY": bai_key,
         "BAI_API_KEY_REF": f"${bai_key_env}" if bai_key_env else bai_key,
-        "BAI_BASE_URL": (text(b, "base_url") or "https://api.b.ai/v1").rstrip("/"),
+        "BAI_BASE_URL": bai_url,
         "CODEX_PROVIDER": text(co, "provider") or "bai",
         "CODEX_MODEL": text(co, "model") or DEFAULT_MODEL,
+        "CODEX_REASONING": text(co, "reasoning_effort") or DEFAULT_CODEX_REASONING,
         "CLAUDE_MODEL": text(cl, "model") or DEFAULT_MODEL,
         "CLAUDE_SONNET": text(cl, "sonnet") or text(cl, "model") or DEFAULT_MODEL,
         "CLAUDE_OPUS": text(cl, "opus") or text(cl, "model") or DEFAULT_MODEL,
@@ -148,9 +154,12 @@ def load_vendors(path):
         "PI_HTTP_PROXY": text(pi, "http_proxy"),
         "DSH_PROVIDER": text(dh, "provider") or "bai",
         "DSH_MODEL": text(dh, "model") or DEFAULT_MODEL,
-        "AIZEX_BASE_URL": (text(ax, "base_url") or "https://ca.memofun.net/v1").rstrip("/"),
-        "AIZEX_API_KEY": text(ax, "api_key") or (os.environ.get(text(ax, "api_key_env"), "") if text(ax, "api_key_env") else ""),
-        "AIZEX_API_KEY_REF": f"${text(ax, 'api_key_env')}" if text(ax, "api_key_env") else text(ax, "api_key"),
+        "AIZEX_BASE_URL": ax_url,
+        "AIZEX_API_KEY": ax_key,
+        "AIZEX_API_KEY_REF": f"${ax_key_env}" if ax_key_env else text(ax, "api_key"),
+        # provider name -> key / url, so codex can be pointed at either upstream
+        "PROVIDER_KEYS": {"bai": bai_key, "aizex": ax_key},
+        "PROVIDER_URLS": {"bai": bai_url, "aizex": ax_url},
     }
 
 
@@ -229,6 +238,8 @@ def toml_str(v):
         return "true" if v else "false"
     if isinstance(v, (int, float)):
         return str(v)
+    if isinstance(v, (list, tuple)):
+        return "[" + ", ".join(toml_str(x) for x in v) + "]"
     return json.dumps(str(v), ensure_ascii=False)
 
 
@@ -381,15 +392,32 @@ def ensure_codex_catalog(path, model):
     return True, data
 
 
+def codex_auth_command(key):
+    """How codex gets its provider key: it runs this command and reads stdout.
+
+    Written into `[model_providers.<provider>.auth]`, because codex has no other
+    way of picking up a third-party key and `experimental_bearer_token` puts the
+    key in plain sight next to the base URL.
+    """
+    if os.name == "nt":
+        return {"command": "cmd", "args": ["/c", "echo", key]}
+    return {"command": "echo", "args": [key]}
+
+
 def setup_codex(env, dry_run, out):
     p = HOME / ".codex" / "config.toml"
     if not p.exists():
         out.append(("codex", str(p), "skip (not installed)"))
         return
-    updates = {None: {"model": env["CODEX_MODEL"], "model_reasoning_effort": "xhigh",
-                      "model_provider": env["CODEX_PROVIDER"], "approval_policy": "on-request"},
-               env["CODEX_PROVIDER"]: {"base_url": env["AIZEX_BASE_URL"], "wire_api": "responses",
-                                        "requires_openai_auth": False, "supports_websockets": True}}
+    provider = env["CODEX_PROVIDER"]
+    updates = {None: {"model": env["CODEX_MODEL"], "model_reasoning_effort": env["CODEX_REASONING"],
+                      "model_provider": provider, "approval_policy": "on-request"},
+               provider: {"base_url": env["PROVIDER_URLS"].get(provider) or env["AIZEX_BASE_URL"],
+                          "wire_api": "responses",
+                          "requires_openai_auth": False, "supports_websockets": True}}
+    key = env["PROVIDER_KEYS"].get(provider, "")
+    if key:
+        updates[provider + ".auth"] = codex_auth_command(key)
     changed, new = patch_toml(p, updates)
     if changed and not dry_run:
         write_text(p, new)
@@ -546,6 +574,31 @@ def read_json(path):
         return {}
 
 
+def codex_provider_setting(tx, provider, field):
+    """Read one string key out of codex's `[model_providers.<provider>]` block."""
+    sec = re.search(r"\[model_providers\." + re.escape(provider) + r"\](.*?)(?=\n\[|\Z)", tx, re.S)
+    if not sec:
+        return ""
+    m = re.search(r"^" + re.escape(field) + r"\s*=\s*\"([^\"]*)\"", sec.group(1), re.M)
+    return m.group(1) if m else ""
+
+
+def codex_auth_key(tx, provider):
+    """Read a provider's api key back out of its codex `[...auth]` command block."""
+    sec = re.search(r"\[model_providers\." + re.escape(provider) + r"\.auth\](.*?)(?=\n\[|\Z)", tx, re.S)
+    if not sec:
+        return ""
+    args = re.search(r"^args\s*=\s*\[(.*?)\]", sec.group(1), re.M | re.S)
+    if not args:
+        return ""
+    try:
+        values = json.loads("[" + args.group(1) + "]")
+    except Exception:
+        return ""
+    last = values[-1] if values else ""
+    return last if isinstance(last, str) and len(last) > 8 else ""
+
+
 def cmd_export(args):
     need_yaml()
     env = {}
@@ -558,6 +611,11 @@ def cmd_export(args):
     env["CODEX_MODEL"] = m.group(1) if m else DEFAULT_MODEL
     mp = re.search(r"^model_provider\s*=\s*\"([^\"]+)\"", tx, re.M)
     env["CODEX_PROVIDER"] = mp.group(1) if mp else "bai"
+    mr = re.search(r"^model_reasoning_effort\s*=\s*\"([^\"]*)\"", tx, re.M)
+    env["CODEX_REASONING"] = mr.group(1) if mr else DEFAULT_CODEX_REASONING
+    prov = env["CODEX_PROVIDER"]
+    env["CODEX_PROVIDER_KEY"] = codex_auth_key(tx, prov)
+    env["CODEX_PROVIDER_BASE_URL"] = codex_provider_setting(tx, prov, "base_url")
     pi_s = read_json(HOME / ".pi" / "agent" / "settings.json")
     env["PI_PROVIDER"] = pi_s.get("defaultProvider") or "bai"
     env["PI_MODEL"] = pi_s.get("defaultModel") or DEFAULT_MODEL
@@ -588,12 +646,27 @@ def cmd_export(args):
         bai_sec["api_key"] = env["BAI_API_KEY"]
     data = {
         "bai": bai_sec,
-        "codex": {"provider": env["CODEX_PROVIDER"], "model": env["CODEX_MODEL"]},
+        "codex": {"provider": env["CODEX_PROVIDER"], "model": env["CODEX_MODEL"],
+                  "reasoning_effort": env["CODEX_REASONING"]},
         "claude": {"model": env["CLAUDE_MODEL"], "sonnet": env["CLAUDE_SONNET"], "opus": env["CLAUDE_OPUS"]},
         "pi": {"provider": env["PI_PROVIDER"], "model": env["PI_MODEL"],
                **({"http_proxy": env["PI_HTTP_PROXY"]} if env["PI_HTTP_PROXY"] else {})},
         "dsh": {"provider": env["DSH_PROVIDER"], "model": env["DSH_MODEL"]},
     }
+    # codex keeps its key in an auth command, not in an env var: record both the
+    # key and the base url in the provider section so a new PC can reproduce them.
+    if prov and prov not in data:
+        sec = {}
+        if env["CODEX_PROVIDER_BASE_URL"]:
+            sec["base_url"] = env["CODEX_PROVIDER_BASE_URL"]
+        if env["CODEX_PROVIDER_KEY"]:
+            sec["api_key"] = env["CODEX_PROVIDER_KEY"]
+        if sec:
+            items = list(data.items())
+            data = dict(items[:1] + [(prov, sec)] + items[1:])
+    elif env["CODEX_PROVIDER_KEY"] and not data[prov].get("api_key") \
+            and not data[prov].get("api_key_env"):
+        data[prov]["api_key"] = env["CODEX_PROVIDER_KEY"]
     write_text(dest, "# agent-bootstrap: single source of truth. Edit here, run: py bootstrap.py\n"
                + yaml.safe_dump(data, allow_unicode=True, sort_keys=False))
     print(f"[export] wrote {dest}")

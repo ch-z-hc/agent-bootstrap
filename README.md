@@ -97,7 +97,7 @@ python3 bootstrap.py check --config ./vendors.yaml --no-probe
 完整字段可以参考 [`vendors.example.yaml`](vendors.example.yaml)：
 
 - 厂商段（例如 `bai`、`aizex`）：`base_url` + `api_key`（或 `api_key_env` 指向环境变量）。
-- `codex.provider` / `codex.model`：Codex 默认厂商和模型；当前 Codex 使用 `responses` API。
+- `codex.provider` / `codex.model` / `codex.reasoning_effort`：Codex 默认厂商、模型和推理强度（省略 `reasoning_effort` 则为 `xhigh`）；当前 Codex 使用 `responses` API。该厂商的 key 也会被写进 `~/.codex/config.toml` 的 `[model_providers.<provider>.auth]`，所以换电脑跑得起来。
 - `claude.model`、`sonnet`、`opus`：Claude Code 的默认模型及三个角色模型。
 - `pi.provider`、`pi.model`：Pi 的默认 provider 和模型。
 - `dsh.provider`、`dsh.model`：DSH 的默认 provider 和模型。

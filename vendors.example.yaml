@@ -11,11 +11,14 @@ bai:
 aizex:
   base_url: https://ca.memofun.net/v1
   api_key_env: AIZEX_API_KEY
+  # 谁被 codex 选中，谁的 key 就得能解析出来（内联 api_key，或真的设了的环境变量）：
+  # sync 会把它写进 ~/.codex/config.toml 的 [model_providers.<provider>.auth]。
 
 # 各 agent 原样记录，互不干扰。
 codex:
   provider: aizex
   model: gpt-5.6-sol
+  reasoning_effort: low        # 省略则用 xhigh
 
 claude:
   model: qwen3.8-flash
