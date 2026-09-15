@@ -5,7 +5,9 @@ description: Sync coding-agent model configs from a single YAML source of truth.
 
 # Agent Bootstrap Sync
 
-All agent model choices live in one file. Never edit agent configs directly.
+Use `~/agent-bootstrap/vendors.yaml` as the single source of truth for vendor,
+endpoint, credential-reference, model, and per-agent settings. Edit that file,
+then run the bootstrap sync; do not hand-edit generated agent config files.
 
 ## Source of truth
 
@@ -14,7 +16,10 @@ All agent model choices live in one file. Never edit agent configs directly.
 ```yaml
 bai:
   base_url: https://api.b.ai/v1
-  api_key_env: BAI_API_KEY    # or api_key: sk-... inline
+  api_key_env: BAI_API_KEY
+aizex:
+  base_url: https://ca.memofun.net/v1
+  api_key_env: AIZEX_API_KEY
 codex:
   provider: bai
   model: qwen3.8-flash        # sync SKIPS codex, see Rules
@@ -31,17 +36,14 @@ dsh:
   model: qwen3.8-flash
 ```
 
-One upstream only: **b.ai**. The old three are dead and gone from `vendors.yaml`
-(gpt proxy `172.93.108.177:8081` → `503 account_pool_empty`; opencode-go → `403 Forbidden`;
-deepseek → `credit insufficient balance: balance=0`). The sync prunes their leftovers from
+One upstream only: **b.ai**. Every other upstream ever configured here has been dropped and is
+out of scope — do not re-add, probe, or recommend one. The sync prunes their leftovers from
 agent files via `RETIRED_PROVIDERS` in `bootstrap.py`.
 
-## b.ai facts (verified 2026-09-15)
-
-- 47 models; IDs lowercase (`qwen3.8-flash`, `qwen3.8-max`, `glm-5.3-flash`, `kimi-k3`, `gpt-5.6-luna`, `claude-opus-5`, `deepseek-v4.1-flash`).
-- Serves `/v1/chat/completions` **and** Anthropic `/v1/messages` (both accept `Authorization: Bearer` or `x-api-key`). Every model's `supported_endpoint_types` is `["openai", "anthropic"]` — **no `/v1/responses`**.
-- Balance-gated: only `qwen3.8-flash` answers today; others return `400 credit insufficient balance` or `403 Deposit required to unlock premium models`.
-- Claude gotcha: `ANTHROPIC_BASE_URL` must be the **root** (`https://api.b.ai`) — clients append `/v1/messages` themselves; setting `.../v1` yields `/v1/v1/messages` → 403.
+Provider sections are ordinary YAML mappings. A provider may define `base_url`,
+`api_key_env` (preferred) or `api_key`, API type, and any provider-specific
+options supported by `bootstrap.py`. Keep credentials out of documentation and
+prefer environment variables.
 
 ## Workflow
 
@@ -67,15 +69,8 @@ Run every step with `py` (Windows Git Bash has no `python3`):
 
 - Keys and URLs come from `export` or the user, never invented. `bootstrap.py` has no network
   fallback for a bad key — a `401 Invalid or expired api_key` means the key, not the config.
-- **Codex cannot use b.ai.** codex 0.154+ dropped `wire_api = "chat"` (verified: config load
-  aborts with `wire_api = "chat" is no longer supported`) and b.ai has no `/responses`.
-  `setup_codex` therefore only reports `skip (bai serves no /responses; codex 0.154+ needs it)`
-  and leaves `~/.codex/config.toml` untouched. Real options if the user wants codex back:
-  (a) a local responses→chat shim on 127.0.0.1, or (b) a different upstream, or (c) drop codex
-  — then delete the parked `patch_toml`/`ensure_codex_catalog`/`_codex_catalog_path` helpers.
-  **Do not propose downgrading codex:** measured on 2026-09-15, `npx @openai/codex@{0.148.0,
-  0.151.0,0.153.4}` all reject `wire_api = "chat"` with the same "no longer supported" error,
-  so the removal predates 0.154 and there is no recent version that can speak to bai.
+- Codex is configured from the `codex.provider` and `codex.model` entries and
+  the matching provider section; `wire_api` must be `responses` for current Codex.
 - `pi`/`dsh` model must exist in bai's `/models` list; sync probes it live and prepends missing IDs.
 - New models need a spec in `bootstrap.py` `OPENCODE_MODEL_SPECS` (still the table name, also used
   for bai) or pi falls back to 128k/16k windows. `qwen3.8-flash` = `(1000000, 131072, True, ["text", "image"])`.
