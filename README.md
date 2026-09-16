@@ -1,142 +1,133 @@
 # agent-bootstrap
 
-把本机几个 coding agent 的模型和 API 配置集中到一个文件里。
+把几台机器上多个 coding agent 的模型配置收敛到**一个 YAML**：改 `vendors.yaml`，跑一条命令，Codex / Pi / Claude Code / DSH / ZCode 的配置文件就同步成一致；换电脑时拷过去再跑一次即可。
 
-平时只改 `vendors.yaml`，然后运行一次同步命令；换电脑时，把这个目录复制过去，再运行同一条命令即可。
+[![license: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-## 适合谁
+它只管 provider、API key、默认模型和相关环境变量；主题、键位、项目信任列表、MCP、插件等个人设置一律不碰。任务完成推送（WxPusher）是独立项目：[ch-z-hc/wxpusher](https://github.com/ch-z-hc/wxpusher)。
 
-如果你同时使用 Claude Code、Codex、Pi、ZCode 或 DSH，并且不想分别修改它们各自的配置文件，这个脚本可以帮你维护一份配置。
+## 技术栈
 
-它主要同步 provider、API key 和默认模型，并设置 agent 正常连接所需的环境变量；不会改动主题、hooks、项目列表等其他个人设置。
+| 项 | 说明 |
+| --- | --- |
+| 语言 | Python 3.7+，单文件 `bootstrap.py`（约 840 行） |
+| 依赖 | 只有 `pyyaml`（读 YAML）；网络用标准库 `urllib`，不装 requests |
+| 运行环境 | Windows（`py`）与 Linux/macOS（`python3` / `sync.sh`）；跨平台差异只在 `codex_auth_command()` 一处 |
+| 被管理对象 | `~/.codex/config.toml`、`~/.pi/agent/*.json`、`~/.claude/settings.json`、`~/.dsh/*.yaml`、`~/.zcode/v2/config.json` |
 
-## 3 分钟开始
+## 架构
 
-### 1. 安装依赖
+```
+vendors.yaml  ──load_vendors()──►  扁平 env 字典 ──►  setup_claude / setup_codex / setup_pi
+ （唯一真相，gitignore）                              setup_zcode / setup_dsh
+                                                          │
+                              patch_json / patch_toml ◄───┘   只改认识的键，其余原样保留
+                                                          │
+                       fetch_models() 在线探测 ────────────┘   模型清单、可用性
+```
 
-脚本需要 Python 3 和 `pyyaml`：
+四条设计约束：
+
+- **只改认识的键**。`patch_json` / `patch_toml` 逐键替换，未知字段与注释保留，所以手写在 agent 配置里的东西不会被抹掉。
+- **没装的 agent 自动跳过**。目标文件不存在就输出 `skip (not installed)`，不会凭空创建目录。
+- **清理已停用的上游**。`RETIRED_PROVIDERS` 里的 provider 会从 agent 文件里被剪掉，避免残留可选的死人模型。
+- **能反向生成**。`export` 从当前机器的 agent 配置读回 `vendors.yaml`（含 codex 的 reasoning 与 auth 里的 key），凭据永远不用手抄。
+
+## 快速开始
 
 ```powershell
 py -m pip install pyyaml
+Copy-Item vendors.example.yaml vendors.yaml   # 填 base_url + key（api_key 或 api_key_env）
+py bootstrap.py --dry-run --only codex pi     # 先看要动什么
+py bootstrap.py --only codex pi               # 再真动
+py bootstrap.py verify                         # 真发一次请求，两条协议都验
 ```
 
-Linux / macOS：
-
-```sh
-python3 -m pip install pyyaml
-```
-
-### 2. 创建配置文件
-
-复制示例文件：
-
-```powershell
-Copy-Item vendors.example.yaml vendors.yaml
-```
-
-Linux / macOS：
-
-```sh
-cp vendors.example.yaml vendors.yaml
-```
-
-编辑 `vendors.yaml`，至少填写这两项：
-
-```yaml
-bai:
-  base_url: https://api.b.ai/v1
-  api_key: sk-...
-```
-
-其他模型和 provider 可以继续使用示例中的默认值，也可以按需修改。
-
-### 3. 预览并同步
-
-先预览：
-
-```powershell
-py bootstrap.py --dry-run --no-probe
-```
-
-确认输出无误后正式同步：
-
-```powershell
-py bootstrap.py
-```
-
-Linux / macOS 可以使用入口脚本：
-
-```sh
-./sync.sh --dry-run --no-probe
-./sync.sh
-```
-
-目标 agent 没有安装时会跳过，不会凭空创建配置文件。
+Linux / macOS 用 `./sync.sh` 代替 `py bootstrap.py`。
 
 ## 常用命令
 
 | 命令 | 用途 |
 | --- | --- |
 | `py bootstrap.py --dry-run` | 只显示将要修改的内容，不写文件 |
-| `py bootstrap.py --only claude pi` | 只同步指定的 agent |
+| `py bootstrap.py --only claude codex pi zcode dsh` | 只同步指定 agent |
 | `py bootstrap.py --no-probe` | 跳过在线模型列表探测 |
-| `py bootstrap.py check` | 检查配置，并探测 provider 的 `/models` 接口 |
-| `py bootstrap.py verify` | 向两条实际调用路径（openai + anthropic）发送一次最小请求 |
-| `py bootstrap.py export --force` | 从当前电脑的 agent 配置反向生成 `vendors.yaml` |
+| `py bootstrap.py check` | 校验 `vendors.yaml` 并探测 `/models` |
+| `py bootstrap.py verify` | 向 openai / anthropic 两条真实调用路径各发一次最小请求 |
+| `py bootstrap.py export --force` | 从本机 agent 配置反向生成 `vendors.yaml` |
 
-参数也可以写在子命令后面。例如：
+## vendors.yaml 字段
 
-```sh
-python3 bootstrap.py check --config ./vendors.yaml --no-probe
+| 段 | 字段 | 说明 |
+| --- | --- | --- |
+| 厂商段（`bai`、`aizex`） | `base_url`、`api_key` 或 `api_key_env` | key 二选一；`api_key_env` 指向已设置的环境变量 |
+| `codex` | `provider`、`model`、`reasoning_effort` | 省略 `reasoning_effort` 则为 `xhigh`；`wire_api` 固定 `responses` |
+| `claude` | `model`、`sonnet`、`opus` | 默认模型与三个角色模型 |
+| `pi` | `provider`、`model`、`http_proxy` | `http_proxy` 会写进 `~/.pi/agent/settings.json` |
+| `dsh` | `provider`、`model` | 同 pi |
+
+当前上游：**b.ai**（claude / pi / dsh / zcode）与 **aizex**（codex）。
+
+## 项目结构
+
+```
+agent-bootstrap/
+├── bootstrap.py              # 全部逻辑：load / setup / export / check / verify
+├── vendors.yaml              # 唯一真相，含明文 key（已 gitignore，勿提交）
+├── vendors.example.yaml      # 模板，带字段注释
+├── sync.sh / sync.ps1        # 一行入口
+└── skills/agent-bootstrap-sync/
+    └── SKILL.md              # 给 coding agent 的操作规范（改配置走这里，别手改生成物）
 ```
 
-`check` 在在线探测失败、配置缺失或格式错误时会返回非零退出码，方便接入脚本和 CI。
+## 主要功能
 
-## 配置文件说明
+- 一次同步多 agent：provider、key、默认模型、推理强度、pi 代理。
+- codex 的 key 写进 `[model_providers.<p>.auth]`（Windows 用 `cmd /c echo`，其它用 `echo`），换机能复现。
+- pi 的模型清单在线刷新；探测失败时沿用本机已有列表，不会写空。新模型缺 `OPENCODE_MODEL_SPECS` 会退回 128k 窗口。
+- qwen 系列自动补 `compat` 块（`thinkingFormat: qwen`、不带 `reasoning_effort`/`store`/`developer`），因为 b.ai 会拒这些字段。
+- `check` 在网络不通、配置缺失或格式错误时返回非零退出码，可挂进 CI。
 
-完整字段可以参考 [`vendors.example.yaml`](vendors.example.yaml)：
+## 开发流程
 
-- 厂商段（例如 `bai`、`aizex`）：`base_url` + `api_key`（或 `api_key_env` 指向环境变量）。
-- `codex.provider` / `codex.model` / `codex.reasoning_effort`：Codex 默认厂商、模型和推理强度（省略 `reasoning_effort` 则为 `xhigh`）；当前 Codex 使用 `responses` API。该厂商的 key 也会被写进 `~/.codex/config.toml` 的 `[model_providers.<provider>.auth]`，所以换电脑跑得起来。
-- `claude.model`、`sonnet`、`opus`：Claude Code 的默认模型及三个角色模型。
-- `pi.provider`、`pi.model`：Pi 的默认 provider 和模型。
-- `dsh.provider`、`dsh.model`：DSH 的默认 provider 和模型。
+1. 改 `bootstrap.py` 或 `skills/…/SKILL.md`（`vendors.yaml` 是本机私有，不入库）。
+2. `py bootstrap.py --dry-run --only <agents>` 预览，再实际同步，再 `verify`。
+3. `master` 单分支，直接 push；其它机器 `git pull` + 跑一次 sync。
+4. 需要新字段时**改脚本**（`load_vendors` + `setup_*` + `cmd_export` + `cmd_verify` 四处对齐），别手改 agent 配置文件 —— 下次同步会覆盖手工修复。
 
-模型列表在线时会自动刷新；网络不可用时沿用本机已有列表，不会把列表写成空值。
+## 编码规范
 
-## 从旧电脑迁移
+- 只用标准库 + PyYAML，保持 3.7 兼容（无 `match`、无新式类型注解）。
+- 写文件统一走 `write_text` / `save_json`：先写临时文件再替换，保留原权限；新建的含密钥文件在 posix 上自动 `0600`。
+- 任何密钥在输出与日志里一律 `mask()`（前 3 后 3）。
+- 每个 `setup_*` 都接受 `dry_run`，并把动作追加到 `out` 列表，由 `cmd_setup` 统一打印 `* / = / ~`。
 
-在旧电脑上执行：
+## 测试
+
+没有自动化测试；用三条命令自检：
+
+- `check` —— 配置与网络；`verify` —— 两条真实调用路径 + 默认模型是否在目录里；`--dry-run` —— 改动面。
+- 已实测组合：3 台机器（Windows ×2、Ubuntu ×1）× 各 agent 段，反复 sync 后 `--dry-run` 仅剩 `patch_toml` 的已知无害标记（该函数恒返回 changed，内容实际未变）。
+- 改 `bootstrap.py` 后务必先 `--dry-run`，再在一台机器上验证 `verify` 通过，才推给其它机器。
+
+## 迁移到新电脑
 
 ```powershell
-py bootstrap.py export
+py bootstrap.py export --force       # 旧机器：生成 vendors.yaml
+# 拷整个目录 + vendors.yaml 到新机器
+py -m pip install pyyaml
+py bootstrap.py                     # 新机器：一次落地
 ```
 
-如果目标文件已经存在，需要显式加 `--force`：
+pi / dsh 的模型需要 bai 可达；某些机器只有代理可达，见 `pi.http_proxy`。
 
-```powershell
-py bootstrap.py export --force
-```
+## 安全
 
-把 `vendors.yaml` 和本目录一起复制到新电脑，安装依赖后运行同步命令即可。
+`vendors.yaml` 含明文 API key，已在 `.gitignore` 里；`_*.yaml` / `*.bak` 一并忽略，避免临时副本被 `git add -A` 带走。不要把它提交到任何仓库或发给别人。
 
-## 安全提醒
+## Contributing
 
-`vendors.yaml` 包含明文 API key，文件已加入 `.gitignore`，不要提交到公开仓库或发给别人。
-
-Linux / macOS 上由脚本新建的密钥文件会设置为仅当前用户可读写。Windows 上请使用系统文件权限保护这些文件。
-
-## 支持的配置位置
-
-脚本会在这些文件存在时更新它们：
-
-| Agent | 配置文件 |
-| --- | --- |
-| Claude Code | `~/.claude/settings.json` |
-| Codex | `~/.codex/config.toml` |
-| Pi | `~/.pi/agent/settings.json`、`models.json`、`models-store.json` |
-| ZCode | `~/.zcode/v2/config.json` |
-| DSH | `~/.dsh/settings.yaml`、`.credentials.yaml` |
+自己用为主，欢迎直接提 PR：单个改动、附 `--dry-run` 输出。新增 agent 时请同时补 `setup_<agent>()`、`cmd_export` 回读、`cmd_verify` 检查项和 README 字段表。
 
 ## License
 
