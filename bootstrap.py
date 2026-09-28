@@ -129,6 +129,12 @@ def load_vendors(path):
             raise ConfigError(f"{p}: '{name}' must be a string")
         return value
 
+    def text_list(section_data, name):
+        value = section_data.get(name) or []
+        if not isinstance(value, list) or any(not isinstance(v, str) for v in value):
+            raise ConfigError(f"{p}: '{name}' must be a list of strings")
+        return [v for v in value if v]
+
     b = section("bai")
     ax = section("aizex")
     cl, co = section("claude"), section("codex")
@@ -145,6 +151,8 @@ def load_vendors(path):
         "BAI_BASE_URL": bai_url,
         "CODEX_PROVIDER": text(co, "provider") or "bai",
         "CODEX_MODEL": text(co, "model") or DEFAULT_MODEL,
+        # extra model ids to keep selectable in codex's local catalog
+        "CODEX_MODELS": text_list(co, "models"),
         "CODEX_REASONING": text(co, "reasoning_effort") or DEFAULT_CODEX_REASONING,
         "CLAUDE_MODEL": text(cl, "model") or DEFAULT_MODEL,
         "CLAUDE_SONNET": text(cl, "sonnet") or text(cl, "model") or DEFAULT_MODEL,
@@ -353,9 +361,9 @@ def _codex_catalog_path(p):
 def ensure_codex_catalog(path, model):
     """Make sure `model` has a metadata entry in codex's local catalog.
 
-    Clones the same-family entry (e.g. gpt-5.6-sol for gpt-5.6-luna) so metadata
-    stays accurate; returns (changed, new_data). Models without a same-family
-    template are left alone — codex's fallback metadata still works.
+    Clones the same-variant entry (gpt-6-luna from gpt-5.6-luna), falling back to
+    the first entry, so every declared model stays selectable in codex's picker;
+    returns (changed, new_data).
     """
     if not path.exists():
         return False, None
@@ -369,14 +377,13 @@ def ensure_codex_catalog(path, model):
     if any(isinstance(m, dict) and m.get("slug") == model for m in ms):
         return False, None
 
-    def family(s):
-        return s.rsplit(".", 1)[0] if "." in str(s) else str(s)
+    def variant(s):
+        s = str(s)
+        return s.rsplit("-", 1)[-1] if "-" in s else s
 
-    tmpl = None
-    for m in ms:
-        if isinstance(m, dict) and isinstance(m.get("slug"), str) and family(m["slug"]) == family(model):
-            tmpl = m
-            break
+    have = [m for m in ms if isinstance(m, dict) and isinstance(m.get("slug"), str)]
+    tmpl = next((m for m in have if variant(m["slug"]) == variant(model)), None) \
+        or (have[0] if have else None)
     if tmpl is None:
         return False, None
     import copy
@@ -422,6 +429,18 @@ def setup_codex(env, dry_run, out):
     if changed and not dry_run:
         write_text(p, new)
     out.append(("codex", str(p), changed))
+    cp = _codex_catalog_path(p)
+    catalog_changed = False
+    for model in [env["CODEX_MODEL"]] + [m for m in env.get("CODEX_MODELS") or []
+                                         if m != env["CODEX_MODEL"]]:
+        ok, data = ensure_codex_catalog(cp, model)
+        if not ok:
+            continue
+        catalog_changed = True
+        if not dry_run:
+            write_text(cp, json.dumps(data, ensure_ascii=False, indent=2) + "\n")
+    if catalog_changed:
+        out.append(("codex catalog", str(cp), True))
 
 
 def bai_models_payload(env, discovered_bai):
@@ -644,10 +663,16 @@ def cmd_export(args):
         bai_sec["api_key_env"] = env["BAI_API_KEY_REF"][1:]
     elif env["BAI_API_KEY"]:
         bai_sec["api_key"] = env["BAI_API_KEY"]
+    cx = {"provider": env["CODEX_PROVIDER"], "model": env["CODEX_MODEL"],
+          "reasoning_effort": env["CODEX_REASONING"]}
+    cat = _codex_catalog_path(HOME / ".codex" / "config.toml")
+    extra = [m.get("slug") for m in read_json(cat).get("models", [])
+             if isinstance(m, dict) and m.get("slug") and m["slug"] != env["CODEX_MODEL"]]
+    if extra:
+        cx["models"] = extra
     data = {
         "bai": bai_sec,
-        "codex": {"provider": env["CODEX_PROVIDER"], "model": env["CODEX_MODEL"],
-                  "reasoning_effort": env["CODEX_REASONING"]},
+        "codex": cx,
         "claude": {"model": env["CLAUDE_MODEL"], "sonnet": env["CLAUDE_SONNET"], "opus": env["CLAUDE_OPUS"]},
         "pi": {"provider": env["PI_PROVIDER"], "model": env["PI_MODEL"],
                **({"http_proxy": env["PI_HTTP_PROXY"]} if env["PI_HTTP_PROXY"] else {})},

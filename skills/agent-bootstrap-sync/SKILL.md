@@ -24,6 +24,7 @@ codex:
   provider: aizex
   model: gpt-5.6-sol
   reasoning_effort: low       # 省略则用 xhigh
+  models: [gpt-6-sol, gpt-6-luna]   # 可选：额外写进 codex 本地目录的可选项
 claude:
   model: qwen3.8-flash
   sonnet: qwen3.8-flash
@@ -76,6 +77,18 @@ Run every step with `py` (Windows Git Bash has no `python3`):
   the only way codex picks up a third-party key — so that provider's key must be resolvable in
   `vendors.yaml` (inline `api_key`, or an `api_key_env` that is actually set), or the key block
   silently stays whatever the machine already had. `export` reads it back out of that block.
+- `codex.models` (optional) lists extra ids to keep selectable in codex's local catalog
+  `~/.codex/models.json` (`model_catalog_json`); the default `codex.model` is always included.
+  Missing entries are appended by `ensure_codex_catalog()`, which clones the same-variant entry
+  (`gpt-6-luna` from `gpt-5.6-luna`; falls back to the first entry) and applies
+  `OPENCODE_MODEL_SPECS` context windows when known. Entries are never pruned — deleting a slug
+  codex still uses is destructive, so say so and ask. `export` reads catalog slugs back into
+  `codex.models`.
+- `verify` does NOT exercise the codex upstream: it only checks `codex.model` against **bai**'s
+  `/models`, so `ALL OK` can coexist with a dead codex provider. Probe the provider codex actually
+  uses: `POST <base_url>/responses` with `{"model":...,"input":"ping","max_output_tokens":16}`
+  (bai rejects `max_output_tokens` < 16). Aizex answers `403 codex_kill_switch` for blocked models
+  (luna/terra) and `429 insufficient_quota` when the account's weekly credits are spent.
 - `pi`/`dsh` model must exist in bai's `/models` list; sync probes it live and prepends missing IDs.
 - New models need a spec in `bootstrap.py` `OPENCODE_MODEL_SPECS` (still the table name, also used
   for bai) or pi falls back to 128k/16k windows. `qwen3.8-flash` = `(1000000, 131072, True, ["text", "image"])`.

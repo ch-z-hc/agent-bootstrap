@@ -13,7 +13,7 @@
 | 语言 | Python 3.7+，单文件 `bootstrap.py`（约 840 行） |
 | 依赖 | 只有 `pyyaml`（读 YAML）；网络用标准库 `urllib`，不装 requests |
 | 运行环境 | Windows（`py`）与 Linux/macOS（`python3` / `sync.sh`）；跨平台差异只在 `codex_auth_command()` 一处 |
-| 被管理对象 | `~/.codex/config.toml`、`~/.pi/agent/*.json`、`~/.claude/settings.json`、`~/.dsh/*.yaml`、`~/.zcode/v2/config.json` |
+| 被管理对象 | `~/.codex/config.toml`、`~/.codex/models.json`、`~/.pi/agent/*.json`、`~/.claude/settings.json`、`~/.dsh/*.yaml`、`~/.zcode/v2/config.json` |
 
 ## 架构
 
@@ -65,7 +65,7 @@ Linux / macOS 用 `./sync.sh` 代替 `py bootstrap.py`。目标 agent 没安装�
 | 段 | 字段 | 说明 |
 | --- | --- | --- |
 | 厂商段（`bai`、`aizex`） | `base_url`、`api_key` 或 `api_key_env` | key 二选一；`api_key_env` 指向已设置的环境变量 |
-| `codex` | `provider`、`model`、`reasoning_effort` | 省略 `reasoning_effort` 则为 `xhigh`；`wire_api` 固定 `responses` |
+| `codex` | `provider`、`model`、`reasoning_effort`、`models` | 省略 `reasoning_effort` 则为 `xhigh`；`wire_api` 固定 `responses`；`models` 是额外要塞进 `~/.codex/models.json` 的模型 ID（默认模型自动包含，条目按同名变种克隆） |
 | `claude` | `model`、`sonnet`、`opus` | 默认模型与三个角色模型 |
 | `pi` | `provider`、`model`、`http_proxy` | `http_proxy` 会写进 `~/.pi/agent/settings.json` |
 | `dsh` | `provider`、`model` | 同 pi |
